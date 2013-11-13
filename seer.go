@@ -44,17 +44,13 @@ func main() {
         serviceServerChannel := make(chan string)
 
         go UDPServer(udpServerChannel, *udpAddress)
-        go ServiceServer(serviceServerChannel, *tcpAddress)
+        go ServiceServer(*tcpAddress)
 
         /* Run background cleanup on 10 second cycle. */
-        go func() {
-                for {
-                        time.Sleep(10000 * time.Millisecond)
-                        fmt.Printf("\nTIME: %s\n", time.Now())
-                        TombstoneReaper()
-                        AntiEntropy()
-                }
-        }()
+        BackgroundLoop("Janitorial Work", 10, TombstoneReaper, AntiEntropy)
+
+        /* Run background routine for GossipOps() */
+        BackgroundLoop("Gossip Oplog", 1, GossipOps)
 
         /* Wait for and handle any messages. */
         for {
@@ -72,6 +68,18 @@ func main() {
         }
 }
 
+func BackgroundLoop(name string, seconds int, fns ...func()) {
+        go func() {
+            for {
+                    time.Sleep(time.Duration(seconds) * time.Second)
+                    fmt.Printf("\n[%s] : LOOPING : %s\n", time.Now(), name)
+                    for _, f := range fns {
+                            f()
+                    }
+            }
+        }()
+}
+
 func AntiEntropy() {
         /*
            1. Wrapped by background jobs. (Sleep Q seconds then do.)
@@ -79,7 +87,7 @@ func AntiEntropy() {
            3. Sync if checksum no match.
 
         */
-        fmt.Printf("I grab fill copies of other host dbs occassionally.\n")
+        fmt.Printf("[AntiEntropy] I grab fill copies of other host dbs occassionally.\n")
 }
 
 func TombstoneReaper() {
@@ -88,12 +96,11 @@ func TombstoneReaper() {
            2. Remove anything but most recent doc that is older than P seconds.
            3. Remove remaining docs if they are Tombstoned and older than certain time.
         */
-        fmt.Printf("I remove stuff that has been deleted or older timestamped source docs.\n")
+        fmt.Printf("[TombstoneReaper] I remove stuff that has been deleted or older timestamped source docs.\n")
 }
 
-func ServiceServer(ch chan<- string, address string) {
-        fmt.Printf("Can query for service by name.\nI listen on %s", address)
-        ch <- "I am a message!"
+func ServiceServer(address string) {
+        fmt.Printf("[ServiceServer] Can query for service by name.\nI listen on %s", address)
         http.HandleFunc("/", ServiceHandler)
         http.ListenAndServe(address, nil)
 }
@@ -148,8 +155,8 @@ func ProcessGossip(gossip string) {
         /* Save it. */
         PutGossip(gossip)
 
-        /* Spread the word. */
-        GossipGossip(gossip)
+        /* Spread the word? Or, use GossipOps()? */
+        // GossipGossip(gossip)
 }
 
 func VerifyGossip(gossip string) (string, error) {
@@ -171,11 +178,20 @@ func PutGossip(gossip string) {
            ** Need Tombstones
            ** Guess there can be a reaper who deletes Tombstones older than M.
         */
-        fmt.Printf("Putting Gossip.")
+        fmt.Printf("[PutGossip] Putting Gossip.")
+}
+
+func GossipOps(){
+        /*
+          1. Pick N random peers.
+          2. Gossip all ops that have occured since last GossipOps() to peers.
+          3. Ops examined by file create date and encoded "ts"?
+        */
+        fmt.Printf("[GossipOps] I grab all (plus some padding?) ops that have appeared since last GossipOps()")
 }
 
 func GossipGossip(gossip string) {
-        fmt.Printf("Gossiping Gossip: %s", gossip)
+        fmt.Printf("[GossipGossip] Gossiping Gossip: %s", gossip)
         /*
            if HostList > M:
              return
