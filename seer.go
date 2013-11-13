@@ -21,9 +21,10 @@ type Gossip struct {
 }
 
 var (
-        SeerRoot   string
-        udpAddress = flag.String("udp", "localhost:9999", "<host>:<port> to use for UDP server.")
-        tcpAddress = flag.String("tcp", "localhost:9998", "<host>:<port> to use for UDP server.")
+        SeerRoot    string
+        udpAddress  = flag.String("udp", "localhost:9999", "<host>:<port> to use for UDP server.")
+        tcpAddress  = flag.String("tcp", "localhost:9998", "<host>:<port> to use for UDP server.")
+        commandList = map[string]bool{"exit": true, "get": true}
 )
 
 func main() {
@@ -62,6 +63,8 @@ func main() {
                         if message == "exit" {
                                 fmt.Printf("\nBYE BYE\n")
                                 return
+                        } else if message == "get" {
+                                fmt.Printf("\nGOT A 'GET' COMMAND!\n")
                         }
                 case message := <-serviceServerChannel:
                         fmt.Printf("\nServiceServer message: %s\n", message)
@@ -118,7 +121,7 @@ func UDPServer(ch chan<- string, address string) {
                         log.Fatal(err)
                 }
                 message := strings.Trim(string(udpBuff[:n]), "\n")
-                if message == "exit" {
+                if commandList[message] {
                         ch <- message
                 } else {
                         go ProcessGossip(message)
@@ -174,10 +177,10 @@ func PutGossip(gossip string) {
 func GossipGossip(gossip string) {
         fmt.Printf("Gossiping Gossip: %s", gossip)
         /*
-          if HostList > M:
-            return
-          Add self to Gossip HostList.
-          for N random Gossipees:
-            send Gossip
+           if HostList > M:
+             return
+           Add self to Gossip HostList.
+           for N random Gossipees:
+             send Gossip
         */
 }
