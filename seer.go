@@ -1,10 +1,12 @@
 package main
 import (
     "encoding/json"
+    "flag"
     "fmt"
     "io/ioutil"
     "log"
     "net"
+    "net/http"
     "os"
     "runtime"
     "strings"
@@ -17,13 +19,19 @@ type Gossip struct {
     Time int64
 }
 
-
+var (
+  SeerRoot string
+  udpAddress = flag.String("udp", "localhost:9999", "<host>:<port> to use for UDP server.")
+  tcpAddress = flag.String("tcp", "localhost:9998", "<host>:<port> to use for UDP server.")
+)
 
 func main() {
   runtime.GOMAXPROCS(int(runtime.NumCPU()/2))
+  flag.Parse()
 
   /* Guarantee folder paths */
-  os.MkdirAll("gossip/oplog", 0777)
+  SeerRoot = "seer/" + *udpAddress
+  os.MkdirAll(SeerRoot + "/gossip/oplog", 0777)
 
   /* Single cleanup on start. */
   TombstoneReaper()
@@ -33,8 +41,8 @@ func main() {
   udpServerChannel := make(chan string)
   serviceServerChannel := make(chan string)
 
-  go UDPServer(udpServerChannel)
-  go ServiceServer(serviceServerChannel)
+  go UDPServer(udpServerChannel, *udpAddress)
+  go ServiceServer(serviceServerChannel, *tcpAddress)
 
   /* Run background cleanup on 10 second cycle. */
   go func() {
@@ -79,18 +87,25 @@ func TombstoneReaper() {
   fmt.Printf("I remove stuff that has been deleted or older timestamped source docs.\n")
 }
 
-func ServiceServer(ch chan<- string) {
-  fmt.Printf("Can query for service by name.\n")
+func ServiceServer(ch chan<- string, address string) {
+  fmt.Printf("Can query for service by name.\nI listen on %s", address)
   ch <- "I am a message!"
+  http.HandleFunc("/", ServiceHandler)
+  http.ListenAndServe(address, nil)
 }
 
-func UDPServer(ch chan<- string) {
+func ServiceHandler(w http.ResponseWriter, r *http.Request){
+  jsonPayload := fmt.Sprintf(`{"Name":"Huh huh", "Body":"%s"}`, r.URL.Path[1:])
+  fmt.Fprintf(w, jsonPayload)
+}
+
+func UDPServer(ch chan<- string, address string) {
   /*
     1. Listen for gossip.
     2. Possibly handle special messages?
       - Someone heard you were down?
   */
-  udpLn, err := net.ListenPacket("udp", ":9999")
+  udpLn, err := net.ListenPacket("udp", address)
   if err != nil {
     log.Fatal(err)
   }
@@ -122,7 +137,7 @@ func ProcessGossip(gossip string) {
     return
   }
   /* Write to oplog. ?? */
-  err = ioutil.WriteFile("gossip/oplog/" + gossipSource  + ".txt", []byte(gossip), 0777)
+  err = ioutil.WriteFile(SeerRoot + "/gossip/oplog/" + gossipSource  + ".txt", []byte(gossip), 0777)
   if err != nil {
     panic(err)
   }
