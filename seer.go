@@ -2,10 +2,12 @@ package main
 
 import (
         "encoding/json"
+        "errors"
         "flag"
         "fmt"
         "io/ioutil"
         "log"
+        "math/rand"
         "net"
         "net/http"
         "os"
@@ -15,13 +17,17 @@ import (
 )
 
 type Gossip struct {
-        Name    string
-        Body    string
-        Time    int64
+        SeerAddr    string
+        ServiceName string
+        ServiceAddr string
+        Tombstone   bool
+        TS          int64
 }
 
 var (
         SeerRoot    string
+        SeerOpDir   string
+        SeerDataDir string
         udpAddress  = flag.String("udp", "localhost:9999", "<host>:<port> to use for UDP server.")
         tcpAddress  = flag.String("tcp", "localhost:9998", "<host>:<port> to use for UDP server.")
         commandList = map[string]bool{"exit": true, "get": true}
@@ -33,7 +39,10 @@ func main() {
 
         /* Guarantee folder paths */
         SeerRoot = "seer/" + *udpAddress
-        os.MkdirAll(SeerRoot+"/gossip/oplog", 0777)
+        SeerOpDir = SeerRoot + "/gossip/oplog"
+        SeerDataDir = SeerRoot + "/gossip/data"
+        os.MkdirAll(SeerOpDir, 0777)
+        os.MkdirAll(SeerDataDir, 0777)
 
         /* Single cleanup on start. */
         TombstoneReaper()
@@ -50,7 +59,7 @@ func main() {
         BackgroundLoop("Janitorial Work", 10, TombstoneReaper, AntiEntropy)
 
         /* Run background routine for GossipOps() */
-        BackgroundLoop("Gossip Oplog", 1, GossipOps)
+        //BackgroundLoop("Gossip Oplog", 1, GossipOps)
 
         /* Wait for and handle any messages. */
         for {
@@ -70,13 +79,13 @@ func main() {
 
 func BackgroundLoop(name string, seconds int, fns ...func()) {
         go func() {
-            for {
-                    time.Sleep(time.Duration(seconds) * time.Second)
-                    fmt.Printf("\n[%s] : LOOPING : %s\n", time.Now(), name)
-                    for _, f := range fns {
-                            f()
-                    }
-            }
+                for {
+                        time.Sleep(time.Duration(seconds) * time.Second)
+                        fmt.Printf("\n[%s] : LOOPING : %s\n", time.Now(), name)
+                        for _, f := range fns {
+                                f()
+                        }
+                }
         }()
 }
 
@@ -142,34 +151,50 @@ func ProcessGossip(gossip string) {
            2. Share gossip?
         */
 
-        gossipSource, err := VerifyGossip(gossip)
-        if err != nil || gossipSource == "" {
+        decodedGossip, err := VerifyGossip(gossip)
+        if err != nil || decodedGossip.SeerAddr == "" {
                 fmt.Printf("\nBad Gossip!: %s\nErr: %s\n", gossip, err)
                 return
         }
-        /* Write to oplog. ?? */
-        err = ioutil.WriteFile(SeerRoot+"/gossip/oplog/"+gossipSource+".txt", []byte(gossip), 0777)
+        /* Write to oplog. opName limits updates from single host to 10 per nanosecond.. */
+        opName := fmt.Sprintf("%d_%s_%d", time.Now().UnixNano(), decodedGossip.SeerAddr, (rand.Int()%10)+10)
+        err = LazyWriteFile(SeerOpDir, opName+".op", gossip)
         if err != nil {
                 panic(err)
         }
         /* Save it. */
-        PutGossip(gossip)
+        PutGossip(gossip, decodedGossip)
 
         /* Spread the word? Or, use GossipOps()? */
         // GossipGossip(gossip)
 }
 
-func VerifyGossip(gossip string) (string, error) {
+func VerifyGossip(gossip string) (Gossip, error) {
+        /*
+           { "SeerAddr" : "remotehost1:9999",
+             "ServiceName" : "mongod",
+             "ServiceAddr" : "remotehost1:2107",
+             "TS" : 123312123123 }
+        */
         var g Gossip
-        sourceHost := ""
         err := json.Unmarshal([]byte(gossip), &g)
-        if err == nil {
-                sourceHost = g.Name
+
+        /* Reflection feels stupid, so bruteforcing it. */
+        /* A Heartbeat is just {SeerAddr,ts}.. so that's all need check. */
+        errorStr := ""
+        if g.SeerAddr == "" {
+                errorStr += ",SeerAddr"
         }
-        return sourceHost, err
+        if g.TS == 0 {
+                errorStr += ",TS"
+        }
+        if err == nil && errorStr != "" {
+                err = errors.New(fmt.Sprintf("[%s] are missing!", errorStr[1:len(errorStr)]))
+        }
+        return g, err
 }
 
-func PutGossip(gossip string) {
+func PutGossip(gossip string, decodedGossip Gossip) {
         /* Merge into local "DB"
            1. Write service type info to gossip/service/source ?
            2. What about gossip/source/service ?? (Would be needed for removes?)
@@ -178,14 +203,32 @@ func PutGossip(gossip string) {
            ** Need Tombstones
            ** Guess there can be a reaper who deletes Tombstones older than M.
         */
-        fmt.Printf("[PutGossip] Putting Gossip.")
+        // Proper approach is to verify gossip.TS > current.TS
+        if decodedGossip.ServiceName == "" {
+                /* Can get all Seer hosts by looking in /services/Seer/ */
+                /* This presumes will never miss initial Seer gossip. */
+                decodedGossip.ServiceName = "Seer"
+        }
+        err := LazyWriteFile(SeerDataDir+"/services/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, gossip)
+        if err != nil {
+                fmt.Printf("Could not PutGossip! Error:\n%s", err)
+        }
 }
 
-func GossipOps(){
+func LazyWriteFile(folderName string, fileName string, data string) error {
+        err := ioutil.WriteFile(folderName+"/"+fileName, []byte(data), 0777)
+        if err != nil {
+                os.MkdirAll(folderName, 0777)
+                err = ioutil.WriteFile(folderName+"/"+fileName, []byte(data), 0777)
+        }
+        return err
+}
+
+func GossipOps() {
         /*
-          1. Pick N random peers.
-          2. Gossip all ops that have occured since last GossipOps() to peers.
-          3. Ops examined by file create date and encoded "ts"?
+           1. Pick N random peers.
+           2. Gossip all ops that have occured since last GossipOps() to peers.
+           3. Ops examined by file create date and encoded "ts"?
         */
         fmt.Printf("[GossipOps] I grab all (plus some padding?) ops that have appeared since last GossipOps()")
 }
