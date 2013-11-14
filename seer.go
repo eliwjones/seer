@@ -25,12 +25,14 @@ type Gossip struct {
 }
 
 var (
-        SeerRoot    string
-        SeerOpDir   string
-        SeerDataDir string
-        udpAddress  = flag.String("udp", "localhost:9999", "<host>:<port> to use for UDP server.")
-        tcpAddress  = flag.String("tcp", "localhost:9998", "<host>:<port> to use for UDP server.")
-        commandList = map[string]bool{"exit": true, "get": true}
+        SeerRoot       string
+        SeerOpDir      string
+        SeerDataDir    string
+        SeerServiceDir string
+        SeerHostDir    string
+        udpAddress     = flag.String("udp", "localhost:9999", "<host>:<port> to use for UDP server.")
+        tcpAddress     = flag.String("tcp", "localhost:9998", "<host>:<port> to use for UDP server.")
+        commandList    = map[string]bool{"exit": true, "get": true}
 )
 
 func main() {
@@ -41,6 +43,8 @@ func main() {
         SeerRoot = "seer/" + *udpAddress
         SeerOpDir = SeerRoot + "/gossip/oplog"
         SeerDataDir = SeerRoot + "/gossip/data"
+        SeerServiceDir = SeerDataDir + "/service"
+        SeerHostDir = SeerDataDir + "/host"
         os.MkdirAll(SeerOpDir, 0777)
         os.MkdirAll(SeerDataDir, 0777)
 
@@ -115,8 +119,49 @@ func ServiceServer(address string) {
 }
 
 func ServiceHandler(w http.ResponseWriter, r *http.Request) {
-        jsonPayload := fmt.Sprintf(`{"Name":"Huh huh", "Body":"%s"}`, r.URL.Path[1:])
+        requestTypeMap := map[string]string{
+                "host":    "seer",
+                "seer":    "seer",
+                "service": "service",
+        }
+        /* Allow GET by 'service' or 'seeraddr' */
+        splitURL := strings.Split(r.URL.Path, "/")
+        requestType := splitURL[1]
+        requestQuery := splitURL[2]
+        if requestTypeMap[requestType] == "" {
+                http.Error(w, "Please query for 'seer' or 'service'", 404)
+                return
+        }
+        jsonPayload := getServiceData(requestQuery, requestTypeMap[requestType])
         fmt.Fprintf(w, jsonPayload)
+}
+
+func getServiceData(name string, requestType string) string {
+        var servicePath string
+        if requestType == "service" {
+                servicePath = SeerServiceDir + "/" + name
+        } else if requestType == "seer" {
+                servicePath = SeerHostDir + "/" + name
+        }
+
+        serviceHosts, _ := ioutil.ReadDir(servicePath)
+        /* read files from servicePath, append to jsonPayload. */
+        jsonPayload := ""
+        for _, serviceHost := range serviceHosts {
+                if serviceHost.IsDir() {
+                        continue
+                }
+                serviceData, err := ioutil.ReadFile(servicePath + "/" + serviceHost.Name())
+                if err == nil {
+                        jsonPayload += fmt.Sprintf("%s,", string(serviceData))
+                } else {
+                        jsonPayload += fmt.Sprintf("ERROR: %s\nFILE: %s", err, serviceHost.Name())
+                }
+        }
+        if len(jsonPayload) > 0 {
+                jsonPayload = jsonPayload[:len(jsonPayload)-1]
+        }
+        return "[" + jsonPayload + "]"
 }
 
 func UDPServer(ch chan<- string, address string) {
@@ -160,6 +205,7 @@ func ProcessGossip(gossip string) {
         opName := fmt.Sprintf("%d_%s_%d", time.Now().UnixNano(), decodedGossip.SeerAddr, (rand.Int()%10)+10)
         err = LazyWriteFile(SeerOpDir, opName+".op", gossip)
         if err != nil {
+                /* Not sure want to panic here.  Move forward at all costs? */
                 panic(err)
         }
         /* Save it. */
@@ -195,21 +241,17 @@ func VerifyGossip(gossip string) (Gossip, error) {
 }
 
 func PutGossip(gossip string, decodedGossip Gossip) {
-        /* Merge into local "DB"
-           1. Write service type info to gossip/service/source ?
-           2. What about gossip/source/service ?? (Would be needed for removes?)
-             - source = hostname:port
-             - folder is empty if no services
-           ** Need Tombstones
-           ** Guess there can be a reaper who deletes Tombstones older than M.
-        */
-        // Proper approach is to verify gossip.TS > current.TS
+        /* Proper approach is to verify gossip.TS > current.TS */
+        /* Current code has odd side effect of allowing Seer data to exist for host even if we missed initial Seer HELO gossip. */
+        /* We leave it to AntiEntropy to patch that up. */
         if decodedGossip.ServiceName == "" {
-                /* Can get all Seer hosts by looking in /services/Seer/ */
-                /* This presumes will never miss initial Seer gossip. */
                 decodedGossip.ServiceName = "Seer"
         }
-        err := LazyWriteFile(SeerDataDir+"/services/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, gossip)
+        err := LazyWriteFile(SeerServiceDir+"/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, gossip)
+        if err != nil {
+                fmt.Printf("Could not PutGossip! Error:\n%s", err)
+        }
+        err = LazyWriteFile(SeerHostDir+"/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, gossip)
         if err != nil {
                 fmt.Printf("Could not PutGossip! Error:\n%s", err)
         }
