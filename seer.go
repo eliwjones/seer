@@ -11,7 +11,9 @@ import (
         "net"
         "net/http"
         "os"
+        "regexp"
         "runtime"
+        "strconv"
         "strings"
         "time"
 )
@@ -33,6 +35,7 @@ var (
         udpAddress     = flag.String("udp", "localhost:9999", "<host>:<port> to use for UDP server.")
         tcpAddress     = flag.String("tcp", "localhost:9998", "<host>:<port> to use for UDP server.")
         commandList    = map[string]bool{"exit": true, "get": true}
+        tsRegexp       = regexp.MustCompile(`[,|{]\s*"TS"\s*:\s*(\d+)\s*[,|}]`)
 )
 
 func main() {
@@ -241,20 +244,46 @@ func VerifyGossip(gossip string) (Gossip, error) {
 }
 
 func PutGossip(gossip string, decodedGossip Gossip) {
-        /* Proper approach is to verify gossip.TS > current.TS */
+        /* Only checking SeerServiceDir for current TS. */
         /* Current code has odd side effect of allowing Seer data to exist for host even if we missed initial Seer HELO gossip. */
         /* We leave it to AntiEntropy to patch that up. */
         if decodedGossip.ServiceName == "" {
                 decodedGossip.ServiceName = "Seer"
         }
+        if !FreshGossip(SeerServiceDir+"/"+decodedGossip.ServiceName+"/"+decodedGossip.SeerAddr, decodedGossip.TS) {
+                fmt.Printf("[Old Assed Gossip] I ain't writing that.\n")
+                return
+        }
         err := LazyWriteFile(SeerServiceDir+"/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, gossip)
         if err != nil {
-                fmt.Printf("Could not PutGossip! Error:\n%s", err)
+                fmt.Printf("Could not PutGossip to: [%s]! Error:\n%s", SeerServiceDir+"/"+decodedGossip.ServiceName, err)
         }
         err = LazyWriteFile(SeerHostDir+"/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, gossip)
         if err != nil {
-                fmt.Printf("Could not PutGossip! Error:\n%s", err)
+                fmt.Printf("Could not PutGossip to: [%s]! Error:\n%s", SeerHostDir+"/"+decodedGossip.SeerAddr, err)
         }
+}
+
+func FreshGossip(filePath string, newTS int64) bool {
+        serviceData, err := ioutil.ReadFile(filePath)
+        if err != nil {
+                return true
+        }
+        currentTS, err := ExtractTSFromJSON(string(serviceData))
+        return newTS > currentTS
+}
+
+func ExtractTSFromJSON(gossip string) (int64, error) {
+        /* Looks for "TS" in JSON like:
+           {"TS":<numbers>,...}
+           {...,"TS":<numbers>}
+           {...,"TS":<numbers>,...}
+        */
+        ts := tsRegexp.FindStringSubmatch(gossip)
+        if len(ts) == 2 {
+                return strconv.ParseInt(ts[1], 10, 64)
+        }
+        return 0, errors.New("Could not find TS.")
 }
 
 func LazyWriteFile(folderName string, fileName string, data string) error {
