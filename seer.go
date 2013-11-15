@@ -1,16 +1,21 @@
 package main
 
 import (
+        "archive/tar"
+        "bytes"
+        "compress/gzip"
         "encoding/json"
         "errors"
         "flag"
         "fmt"
+        "io"
         "io/ioutil"
         "log"
         "math/rand"
         "net"
         "net/http"
         "os"
+        "path/filepath"
         "regexp"
         "runtime"
         "strconv"
@@ -22,6 +27,7 @@ type Gossip struct {
         SeerAddr    string
         ServiceName string
         ServiceAddr string
+        SeerRequest string
         Tombstone   bool
         TS          int64
 }
@@ -121,6 +127,11 @@ func ServiceServer(address string) {
         http.ListenAndServe(address, nil)
 }
 
+func errorResponse(w http.ResponseWriter, message string) {
+        w.WriteHeader(http.StatusInternalServerError)
+        w.Write([]byte(message))
+}
+
 func ServiceHandler(w http.ResponseWriter, r *http.Request) {
         requestTypeMap := map[string]string{
                 "host":    "seer",
@@ -129,14 +140,34 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
         }
         /* Allow GET by 'service' or 'seeraddr' */
         splitURL := strings.Split(r.URL.Path, "/")
-        requestType := splitURL[1]
-        requestQuery := splitURL[2]
-        if requestTypeMap[requestType] == "" {
-                http.Error(w, "Please query for 'seer' or 'service'", 404)
-                return
+
+        switch r.Method {
+        case "GET":
+                if requestTypeMap[splitURL[1]] == "" {
+                        errorResponse(w, "Please query for 'seer' or 'service'")
+                        return
+                }
+                jsonPayload := getServiceData(splitURL[2], requestTypeMap[splitURL[1]])
+                fmt.Fprintf(w, jsonPayload)
+        case "PUT":
+                if splitURL[1] != "seed" {
+                        errorResponse(w, "I only accept PUTs for 'seed'")
+                }
+                path := fmt.Sprintf("/tmp/seer_received_seed_%s_%d.tar.gz", *udpAddress, time.Now().Unix())
+                file, err := os.Create(path)
+                if err != nil {
+                        errorResponse(w, err.Error())
+                        return
+                }
+                defer file.Close()
+                _, err = io.Copy(file, r.Body)
+                if err != nil {
+                        errorResponse(w, err.Error())
+                        return
+                }
+                /* Made it here.. now need to do go routine to unzip. */
+                go processSeed(path)
         }
-        jsonPayload := getServiceData(requestQuery, requestTypeMap[requestType])
-        fmt.Fprintf(w, jsonPayload)
 }
 
 func getServiceData(name string, requestType string) string {
@@ -165,6 +196,114 @@ func getServiceData(name string, requestType string) string {
                 jsonPayload = jsonPayload[:len(jsonPayload)-1]
         }
         return "[" + jsonPayload + "]"
+}
+
+// Once receive UDP notification that seerDestinationAddr needs seed
+// tar gz 'host' and 'service' dirs and PUT to seerDestinationAddr.
+func sendSeed(seerDestinationAddr string) {
+        tarredGossipFile := fmt.Sprintf("/tmp/seer_generated_seed_%s_%s.tar.gz", *udpAddress, seerDestinationAddr)
+        err := createTarGz(tarredGossipFile, SeerServiceDir, SeerHostDir)
+        if err != nil {
+                fmt.Printf("[sendSeed] Failed to create tar.gz. ERR: %s", err)
+                return
+        }
+        /* Open file */
+        rbody, _ := os.Open(tarredGossipFile)
+        /* Put file */
+        request, err := http.NewRequest("PUT", "http://"+seerDestinationAddr+"/seed", rbody)
+        if err != nil {
+                fmt.Printf("[sendSeed] ERROR MAKING REQUEST: %s\n", err)
+                return
+        }
+        stat, err := rbody.Stat()
+        if err != nil {
+                fmt.Printf("[sendSeed] ERROR WITH STAT(): %s", err)
+                return
+        } else {
+                request.ContentLength = stat.Size()
+        }
+        response, err := http.DefaultClient.Do(request)
+        fmt.Printf("[sendSeed] RESPONSE: %s\nERR: %s\n", response, err)
+}
+
+// Zips up seer/<hostname>/gossip/data/ (aka SeerDataDir)
+// General usage is targeting 'host' and 'service' subfolders.
+// Removes SeerDataDir root for "easier" untarring into destination.
+// TODO: make less stupid.
+func createTarGz(tarpath string, folders ...string) error {
+        tarfile, err := os.Create(tarpath)
+        if err != nil {
+                return err
+        }
+        defer tarfile.Close()
+        gw, err := gzip.NewWriterLevel(tarfile, gzip.BestCompression)
+        defer gw.Close()
+        tw := tar.NewWriter(gw)
+        defer tw.Close()
+        for _, folder := range folders {
+                filepath.Walk(folder, func(path string, fileinfo os.FileInfo, err error) error {
+                        if fileinfo.IsDir() {
+                                return nil
+                        }
+                        header, err := tar.FileInfoHeader(fileinfo, path)
+                        header.Name = path[len(SeerDataDir)+1:]
+                        err = tw.WriteHeader(header)
+                        if err != nil {
+                                fmt.Printf("Failed to write Tar Header. Err: %s\n", err)
+                                return err
+                        }
+                        /* Add file. */
+                        file, err := os.Open(path)
+                        if err != nil {
+                                fmt.Printf("Failed to open path: [%s] Err: %s\n", path, err)
+                                return err
+                        }
+                        defer file.Close()
+                        _, err = io.Copy(tw, file)
+                        if err != nil {
+                                fmt.Printf("Failed to copy file into tar: [%s] Err: %s\n", path, err)
+                                return err
+                        }
+                        return nil
+                })
+        }
+
+        return err
+}
+
+func processSeed(targzpath string) {
+        targzfile, err := os.Open(targzpath)
+        if err != nil {
+
+        }
+        defer targzfile.Close()
+        gzr, err := gzip.NewReader(targzfile)
+        if err != nil {
+
+        }
+        defer gzr.Close()
+        tr := tar.NewReader(gzr)
+        for {
+                hdr, err := tr.Next()
+                if err == io.EOF {
+                        fmt.Printf("[processSeed] Reached end of tr!!\n")
+                        break
+                }
+                if err != nil {
+                        fmt.Printf("[processSeed] tr ERR: %s\n", err)
+                        break
+                }
+                fmt.Printf("[processSeed] filename: %s\n", hdr.Name)
+                buf := bytes.NewBuffer(nil)
+                io.Copy(buf, tr)
+                folder := filepath.Dir(SeerDataDir + "/" + hdr.Name)
+                filename := filepath.Base(folder)
+                err = LazyWriteFile(folder, filename, buf.Bytes())
+                if err != nil {
+                        fmt.Printf("[processSeed] ERRR: %s", err)
+                }
+        }
+        return
 }
 
 func UDPServer(ch chan<- string, address string) {
@@ -200,13 +339,19 @@ func ProcessGossip(gossip string) {
         */
 
         decodedGossip, err := VerifyGossip(gossip)
+        if decodedGossip.SeerRequest == "SeedMe" {
+                /* Have received a request, maybe respond? */
+                go sendSeed(decodedGossip.SeerAddr)
+                fmt.Printf("Seed Requested! Sending to: %s\n", decodedGossip.SeerAddr)
+                return
+        }
         if err != nil || decodedGossip.SeerAddr == "" {
                 fmt.Printf("\nBad Gossip!: %s\nErr: %s\n", gossip, err)
                 return
         }
         /* Write to oplog. opName limits updates from single host to 10 per nanosecond.. */
         opName := fmt.Sprintf("%d_%s_%d", time.Now().UnixNano(), decodedGossip.SeerAddr, (rand.Int()%10)+10)
-        err = LazyWriteFile(SeerOpDir, opName+".op", gossip)
+        err = LazyWriteFile(SeerOpDir, opName+".op", []byte(gossip))
         if err != nil {
                 /* Not sure want to panic here.  Move forward at all costs? */
                 panic(err)
@@ -254,11 +399,11 @@ func PutGossip(gossip string, decodedGossip Gossip) {
                 fmt.Printf("[Old Assed Gossip] I ain't writing that.\n")
                 return
         }
-        err := LazyWriteFile(SeerServiceDir+"/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, gossip)
+        err := LazyWriteFile(SeerServiceDir+"/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, []byte(gossip))
         if err != nil {
                 fmt.Printf("Could not PutGossip to: [%s]! Error:\n%s", SeerServiceDir+"/"+decodedGossip.ServiceName, err)
         }
-        err = LazyWriteFile(SeerHostDir+"/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, gossip)
+        err = LazyWriteFile(SeerHostDir+"/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, []byte(gossip))
         if err != nil {
                 fmt.Printf("Could not PutGossip to: [%s]! Error:\n%s", SeerHostDir+"/"+decodedGossip.SeerAddr, err)
         }
@@ -286,11 +431,11 @@ func ExtractTSFromJSON(gossip string) (int64, error) {
         return 0, errors.New("Could not find TS.")
 }
 
-func LazyWriteFile(folderName string, fileName string, data string) error {
-        err := ioutil.WriteFile(folderName+"/"+fileName, []byte(data), 0777)
+func LazyWriteFile(folderName string, fileName string, data []byte) error {
+        err := ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
         if err != nil {
                 os.MkdirAll(folderName, 0777)
-                err = ioutil.WriteFile(folderName+"/"+fileName, []byte(data), 0777)
+                err = ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
         }
         return err
 }
