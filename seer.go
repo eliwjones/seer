@@ -40,6 +40,7 @@ var (
         SeerHostDir    string
         udpAddress     = flag.String("udp", "localhost:9999", "<host>:<port> to use for UDP server.")
         tcpAddress     = flag.String("tcp", "localhost:9998", "<host>:<port> to use for UDP server.")
+        bootstrap      = flag.String("bootstrap", "", "<host>:<udp port> for Seer Host to request seed from.")
         commandList    = map[string]bool{"exit": true, "get": true}
         tsRegexp       = regexp.MustCompile(`[,|{]\s*"TS"\s*:\s*(\d+)\s*[,|}]`)
 )
@@ -67,6 +68,26 @@ func main() {
 
         go UDPServer(udpServerChannel, *udpAddress)
         go ServiceServer(*tcpAddress)
+
+        if *bootstrap != "" {
+                /* Send SeerRequest asking bootstrap host to send seed to tcpAddress. */
+                go func() {
+                        ra, err := net.ResolveUDPAddr("udp", *bootstrap)
+                        if err != nil {
+                                fmt.Printf("[bootstrap] Error Resolving my Address: %s\n", *bootstrap)
+                                return
+                        }
+                        c, err := net.DialUDP("udp", nil, ra)
+                        if err != nil {
+                                fmt.Printf("[bootstrap] Error Dialing: %s\n", ra)
+                                return
+                        }
+                        defer c.Close()
+                        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, *tcpAddress)
+                        fmt.Printf("\nSeerRequest: %s TO: %s\n", message, *bootstrap)
+                        c.Write([]byte(message))
+                }()
+        }
 
         /* Run background cleanup on 10 second cycle. */
         BackgroundLoop("Janitorial Work", 10, TombstoneReaper, AntiEntropy)
@@ -286,14 +307,12 @@ func processSeed(targzpath string) {
         for {
                 hdr, err := tr.Next()
                 if err == io.EOF {
-                        fmt.Printf("[processSeed] Reached end of tr!!\n")
                         break
                 }
                 if err != nil {
                         fmt.Printf("[processSeed] tr ERR: %s\n", err)
                         break
                 }
-                fmt.Printf("[processSeed] filename: %s\n", hdr.Name)
                 buf := bytes.NewBuffer(nil)
                 io.Copy(buf, tr)
                 folder := filepath.Dir(SeerDataDir + "/" + hdr.Name)
@@ -342,7 +361,9 @@ func ProcessGossip(gossip string) {
         if decodedGossip.SeerRequest == "SeedMe" {
                 /* Have received a request, maybe respond? */
                 go sendSeed(decodedGossip.SeerAddr)
+                fmt.Printf("\n************************************************\n")
                 fmt.Printf("Seed Requested! Sending to: %s\n", decodedGossip.SeerAddr)
+                fmt.Printf("\n************************************************\n")
                 return
         }
         if err != nil || decodedGossip.SeerAddr == "" {
