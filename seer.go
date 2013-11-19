@@ -1,6 +1,8 @@
 package main
 
 import (
+        "code.google.com/p/go.net/ipv4"
+
         "archive/tar"
         "bytes"
         "compress/gzip"
@@ -33,24 +35,38 @@ type Gossip struct {
 }
 
 var (
-        SeerRoot       string
-        SeerOpDir      string
-        SeerDataDir    string
-        SeerServiceDir string
-        SeerHostDir    string
-        udpAddress     = flag.String("udp", "localhost:9999", "<host>:<port> to use for UDP server.")
-        tcpAddress     = flag.String("tcp", "localhost:9998", "<host>:<port> to use for UDP server.")
-        bootstrap      = flag.String("bootstrap", "", "<host>:<udp port> for Seer Host to request seed from.")
-        commandList    = map[string]bool{"exit": true, "get": true}
-        tsRegexp       = regexp.MustCompile(`[,|{]\s*"TS"\s*:\s*(\d+)\s*[,|}]`)
+        SeerRoot        string
+        SeerOpDir       string
+        SeerDataDir     string
+        SeerServiceDir  string
+        SeerHostDir     string
+        udpAddress      string
+        tcpAddress      string
+        hostIP          = flag.String("ip", "", "REQUIRED! IP address to communicate with other Seers from.")
+        udpPort         = flag.String("udp", "9999", "<port> to use for UDP server. Default is: 9999")
+        tcpPort         = flag.String("tcp", "9998", "<port> to use for HTTP server.  Default is: 9998")
+        bootstrap       = flag.String("bootstrap", "", "<host>:<udp port> for Seer Host to request seed from. Use -bootstrap=magic to search.")
+        listenBroadcast = flag.Bool("listenbroadcast", true, "Can disable listening to broadcast UDP packets.  Useful for testing multiple IPs on same machine.")
+        commandList     = map[string]bool{"exit": true, "get": true}
+        tsRegexp        = regexp.MustCompile(`[,|{]\s*"TS"\s*:\s*(\d+)\s*[,|}]`)
+        gossipSocket    *net.UDPConn
+        lastSeedTS      int64
 )
 
 func main() {
         runtime.GOMAXPROCS(int(runtime.NumCPU() / 2))
         flag.Parse()
 
+        if *hostIP == "" {
+                fmt.Printf("Please pass -ip=W.X.Y.Z\n")
+                return
+        }
+
+        udpAddress = *hostIP + ":" + *udpPort
+        tcpAddress = *hostIP + ":" + *tcpPort
+
         /* Guarantee folder paths */
-        SeerRoot = "seer/" + *udpAddress
+        SeerRoot = "seer/" + udpAddress
         SeerOpDir = SeerRoot + "/gossip/oplog"
         SeerDataDir = SeerRoot + "/gossip/data"
         SeerServiceDir = SeerDataDir + "/service"
@@ -59,38 +75,25 @@ func main() {
         os.MkdirAll(SeerDataDir, 0777)
 
         /* Single cleanup on start. */
-        TombstoneReaper()
-        AntiEntropy()
+        //TombstoneReaper()
+        //AntiEntropy()
 
         /* Set up channels and start servers. */
         udpServerChannel := make(chan string)
         serviceServerChannel := make(chan string)
 
-        go UDPServer(udpServerChannel, *udpAddress)
-        go ServiceServer(*tcpAddress)
+        go UDPServer(udpServerChannel, *hostIP, *udpPort)
+        go ServiceServer(tcpAddress)
+
+        /* Not really sure how want to build this out. */
+        createGossipSocket()
 
         if *bootstrap != "" {
-                /* Send SeerRequest asking bootstrap host to send seed to tcpAddress. */
-                go func() {
-                        ra, err := net.ResolveUDPAddr("udp", *bootstrap)
-                        if err != nil {
-                                fmt.Printf("[bootstrap] Error Resolving my Address: %s\n", *bootstrap)
-                                return
-                        }
-                        c, err := net.DialUDP("udp", nil, ra)
-                        if err != nil {
-                                fmt.Printf("[bootstrap] Error Dialing: %s\n", ra)
-                                return
-                        }
-                        defer c.Close()
-                        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, *tcpAddress)
-                        fmt.Printf("\nSeerRequest: %s TO: %s\n", message, *bootstrap)
-                        c.Write([]byte(message))
-                }()
+                BootStrap(*bootstrap, tcpAddress)
         }
 
         /* Run background cleanup on 10 second cycle. */
-        BackgroundLoop("Janitorial Work", 10, TombstoneReaper, AntiEntropy)
+        //BackgroundLoop("Janitorial Work", 10, TombstoneReaper, AntiEntropy)
 
         /* Run background routine for GossipOps() */
         //BackgroundLoop("Gossip Oplog", 1, GossipOps)
@@ -109,6 +112,51 @@ func main() {
                         fmt.Printf("\nServiceServer message: %s\n", message)
                 }
         }
+}
+
+func createGossipSocket() {
+        c, err := net.ListenPacket("udp4", ":0")
+        if err != nil {
+                fmt.Printf("[createGossipSocket] ERR: %s\n", err)
+                os.Exit(1)
+        }
+        gossipSocket = c.(*net.UDPConn)
+}
+
+func SendGossip(gossip string, seerAddr string) {
+        seer, err := net.ResolveUDPAddr("udp4", seerAddr)
+        if err != nil {
+                fmt.Printf("[SendGossip] ERR: %s\n", err)
+                return
+        }
+        fmt.Printf("[SendGossip] gossip: %s\n    TO: %s\n", gossip, seer)
+        gossipSocket.WriteToUDP([]byte(gossip), seer)
+}
+
+func GossipGossip(gossip string) {
+        fmt.Printf("[GossipGossip] Gossiping Gossip: %s", gossip)
+
+        /*
+           if HostList > M:
+             return
+           Add self to Gossip HostList.
+           for N random Gossipees:
+             send Gossip
+        */
+}
+
+func BootStrap(seeder string, seedee string) {
+        /* Sexier */
+        if seeder == "magic" {
+                /* Broadcast to whoever.  Must still handle handshake so that not all Seers send their data. */
+                seeder = "255.255.255.255:9999"
+        }
+        if strings.HasPrefix(seeder, "255.") {
+                /* If Broadcasting, must send udpAddress so they can send back "SeedYou" query. */
+                seedee = udpAddress
+        }
+        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, seedee)
+        SendGossip(message, seeder)
 }
 
 func BackgroundLoop(name string, seconds int, fns ...func()) {
@@ -143,7 +191,7 @@ func TombstoneReaper() {
 }
 
 func ServiceServer(address string) {
-        fmt.Printf("[ServiceServer] Can query for service by name.\nI listen on %s", address)
+        fmt.Printf("[ServiceServer] Can query for service by name.\nI listen on %s\n", address)
         http.HandleFunc("/", ServiceHandler)
         http.ListenAndServe(address, nil)
 }
@@ -174,7 +222,7 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
                 if splitURL[1] != "seed" {
                         errorResponse(w, "I only accept PUTs for 'seed'")
                 }
-                path := fmt.Sprintf("/tmp/seer_received_seed_%s_%d.tar.gz", *udpAddress, time.Now().Unix())
+                path := fmt.Sprintf("/tmp/seer_received_seed_%s_%d.tar.gz", udpAddress, time.Now().Unix())
                 file, err := os.Create(path)
                 if err != nil {
                         errorResponse(w, err.Error())
@@ -222,10 +270,10 @@ func getServiceData(name string, requestType string) string {
 // Once receive UDP notification that seerDestinationAddr needs seed
 // tar gz 'host' and 'service' dirs and PUT to seerDestinationAddr.
 func sendSeed(seerDestinationAddr string) {
-        tarredGossipFile := fmt.Sprintf("/tmp/seer_generated_seed_%s_%s.tar.gz", *udpAddress, seerDestinationAddr)
+        tarredGossipFile := fmt.Sprintf("/tmp/seer_generated_seed_%s_%s.tar.gz", udpAddress, seerDestinationAddr)
         err := createTarGz(tarredGossipFile, SeerServiceDir, SeerHostDir)
         if err != nil {
-                fmt.Printf("[sendSeed] Failed to create tar.gz. ERR: %s", err)
+                fmt.Printf("[sendSeed] Failed to create tar.gz. ERR: %s\n", err)
                 return
         }
         /* Open file */
@@ -238,7 +286,7 @@ func sendSeed(seerDestinationAddr string) {
         }
         stat, err := rbody.Stat()
         if err != nil {
-                fmt.Printf("[sendSeed] ERROR WITH STAT(): %s", err)
+                fmt.Printf("[sendSeed] ERROR WITH STAT(): %s\n", err)
                 return
         } else {
                 request.ContentLength = stat.Size()
@@ -258,11 +306,18 @@ func createTarGz(tarpath string, folders ...string) error {
         }
         defer tarfile.Close()
         gw, err := gzip.NewWriterLevel(tarfile, gzip.BestCompression)
+        if err != nil {
+                return err
+        }
         defer gw.Close()
         tw := tar.NewWriter(gw)
         defer tw.Close()
         for _, folder := range folders {
                 filepath.Walk(folder, func(path string, fileinfo os.FileInfo, err error) error {
+                        if err != nil {
+                                fmt.Printf("[createTarGz] Err: %s\n", err)
+                                return err
+                        }
                         if fileinfo.IsDir() {
                                 return nil
                         }
@@ -293,14 +348,18 @@ func createTarGz(tarpath string, folders ...string) error {
 }
 
 func processSeed(targzpath string) {
+        lastSeedTS = time.Now().UnixNano()
+        fmt.Printf("[processSeed] lastSeedTS: %s\n", lastSeedTS)
         targzfile, err := os.Open(targzpath)
         if err != nil {
-
+                lastSeedTS = 0
+                return
         }
         defer targzfile.Close()
         gzr, err := gzip.NewReader(targzfile)
         if err != nil {
-
+                lastSeedTS = 0
+                return
         }
         defer gzr.Close()
         tr := tar.NewReader(gzr)
@@ -325,20 +384,34 @@ func processSeed(targzpath string) {
         return
 }
 
-func UDPServer(ch chan<- string, address string) {
+func UDPServer(ch chan<- string, ipAddress string, port string) {
         /*
-           1. Listen for gossip.
-           2. Possibly handle special messages?
-             - Someone heard you were down?
+           "Have" to hack this since want to receive broadcast packets.. yet.. they don't appear to show up
+           if net.ListenPacket() gets called on specific IP address?
+           Really annoying since prevents listening on same port using different IP addresses on same machine.
+
+           Thus, I have added more hack.
         */
-        udpLn, err := net.ListenPacket("udp", address)
+        var err error
+        var c net.PacketConn
+
+        if *listenBroadcast {
+                c, err = net.ListenPacket("udp", ":"+port)
+        } else {
+                c, err = net.ListenPacket("udp", udpAddress)
+        }
         if err != nil {
                 log.Fatal(err)
         }
-        defer udpLn.Close()
-        udpBuff := make([]byte, 128)
+        defer c.Close()
+        udpLn := ipv4.NewPacketConn(c)
+        err = udpLn.SetControlMessage(ipv4.FlagDst, true)
+        if err != nil {
+                log.Fatal(err)
+        }
+        udpBuff := make([]byte, 256)
         for {
-                n, _, err := udpLn.ReadFrom(udpBuff)
+                n, cm, _, err := udpLn.ReadFrom(udpBuff)
                 if err != nil {
                         log.Fatal(err)
                 }
@@ -346,28 +419,46 @@ func UDPServer(ch chan<- string, address string) {
                 if commandList[message] {
                         ch <- message
                 } else {
-                        go ProcessGossip(message)
+                        go ProcessGossip(message, cm.Src.String(), cm.Dst.String())
                 }
         }
 }
 
-func ProcessGossip(gossip string) {
+func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
         /*
            1. Write Gossip to gossiplog.
            2. Share gossip?
         */
 
         decodedGossip, err := VerifyGossip(gossip)
-        if decodedGossip.SeerRequest == "SeedMe" {
-                /* Have received a request, maybe respond? */
-                go sendSeed(decodedGossip.SeerAddr)
-                fmt.Printf("\n************************************************\n")
-                fmt.Printf("Seed Requested! Sending to: %s\n", decodedGossip.SeerAddr)
-                fmt.Printf("\n************************************************\n")
+        /* Handle any broadcasted commands first, since basic gossip is not allowed to be broadcast. */
+        if decodedGossip.SeerRequest == "SeedMe" && strings.HasPrefix(destinationIp, "255.") {
+                /* If receive broadcast, send back "SeedYou" query. */
+                if udpAddress == decodedGossip.SeerAddr {
+                        /* No need to seed oneself. */
+                        /* Might be sexier to have SendGossip() block gossip to self? */
+                        return
+                }
+                message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedYou"}`, udpAddress)
+                SendGossip(message, decodedGossip.SeerAddr)
+                return
+        } else if decodedGossip.SeerRequest == "SeedMe" {
+                /* Received direct "SeedMe" request.  Send seed. */
+                sendSeed(decodedGossip.SeerAddr)
+                return
+        } else if decodedGossip.SeerRequest == "SeedYou" {
+                /* Seer thinks I want a Seed.. do I? */
+                if time.Now().UnixNano() >= lastSeedTS+1000000000*30 {
+                        fmt.Printf("[SeedYou] Requesting Seed!\n  NOW - THEN = %s", time.Now().UnixNano()-lastSeedTS)
+                        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, tcpAddress)
+                        SendGossip(message, decodedGossip.SeerAddr)
+                } else {
+                        fmt.Printf("[SeedYou] No need to seed!\n  NOW - THEN = %s", time.Now().UnixNano()-lastSeedTS)
+                }
                 return
         }
-        if err != nil || decodedGossip.SeerAddr == "" {
-                fmt.Printf("\nBad Gossip!: %s\nErr: %s\n", gossip, err)
+        if err != nil || decodedGossip.SeerAddr == "" || destinationIp != *hostIP {
+                fmt.Printf("\nBad Gossip!: %s\nErr: %s\nDestination: %s\n", gossip, err, destinationIp)
                 return
         }
         /* Write to oplog. opName limits updates from single host to 10 per nanosecond.. */
@@ -468,15 +559,4 @@ func GossipOps() {
            3. Ops examined by file create date and encoded "ts"?
         */
         fmt.Printf("[GossipOps] I grab all (plus some padding?) ops that have appeared since last GossipOps()")
-}
-
-func GossipGossip(gossip string) {
-        fmt.Printf("[GossipGossip] Gossiping Gossip: %s", gossip)
-        /*
-           if HostList > M:
-             return
-           Add self to Gossip HostList.
-           for N random Gossipees:
-             send Gossip
-        */
 }
