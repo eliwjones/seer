@@ -87,8 +87,13 @@ func main() {
         go UDPServer(udpServerChannel, *hostIP, *udpPort)
         go ServiceServer(tcpAddress)
 
-        /* Not really sure how want to build this out. */
+        /*
+            Not really sure how want to build this out.
+            Sort of annoying since need to wait for seed
+            to announce self to peers.
+        */
         createGossipSocket()
+        HowAmINotMyself(udpAddress, udpAddress)
 
         if *bootstrap != "" {
                 BootStrap(*bootstrap, tcpAddress)
@@ -136,23 +141,33 @@ func SendGossip(gossip string, seerAddr string) {
                 newTs := fmt.Sprintf(`,"TS":%d}`, time.Now().Unix())
                 gossip = gossip[:len(gossip)-1] + newTs
         }
-        _, err = ExtractSeerPathFromJSON(gossip)
+        seerPath, err := ExtractSeerPathFromJSON(gossip)
         if err != nil && err.Error() == "no SeerPath" {
-                seerPath := fmt.Sprintf(`,"SeerPath":["%s"]}`, udpAddress)
+                seerPath = fmt.Sprintf(`,"SeerPath":["%s"]}`, udpAddress)
                 gossip = gossip[:len(gossip)-1] + seerPath
-        } else {
+        } else if strings.LastIndex(seerPath, udpAddress) == -1 {
+                /* Do not want to add myself to myself. */
                 gossip = UpdateSeerPath(gossip)
         }
         fmt.Printf("[SendGossip] gossip: %s\n    TO: %s\n", gossip, seer)
         gossipSocket.WriteToUDP([]byte(gossip), seer)
 }
 
+func HowAmINotMyself(seerAddr string, gossipee string){
+        gossip := fmt.Sprintf(`{"SeerAddr":"%s"}`, seerAddr)
+        SendGossip(gossip, gossipee)
+}
+
 func FreshGossip(filePath string, newTS int64) bool {
         serviceData, err := ioutil.ReadFile(filePath)
         if err != nil {
+                fmt.Printf("[FreshGossip] Could not read existing gossip. filePath: [%s]\n", filePath)
                 return true
         }
         currentTS, err := ExtractTSFromJSON(string(serviceData))
+        if err != nil {
+                fmt.Printf("[FreshGossip] Not TS found. serviceData: [%s]\n", string(serviceData))
+        }
         return newTS > currentTS
 }
 
@@ -184,6 +199,10 @@ func ExtractTSFromJSON(gossip string) (int64, error) {
 func GossipGossip(gossip string) {
         fmt.Printf("[GossipGossip] Gossiping Gossip: %s\n", gossip)
         seerPeers := GetSeerPeers()
+        if len(seerPeers) == 0 {
+                fmt.Println("[GossipGossip] No peers! No one to gossip with.")
+                return
+        }
         randIndex := rand.Int() % len(seerPeers)
         tries := 0
         seerPath, _ := ExtractSeerPathFromJSON(gossip)
@@ -204,14 +223,14 @@ func GetSeerPeers() []string {
         seerHostDir, err := os.Open(SeerHostDir)
         if err != nil {
                 fmt.Printf("[GetSeerPeers] ERR: %s\n", err)
-                return nil
+                return []string{}
         }
 
         seerPeers, err := seerHostDir.Readdirnames(-1)
         seerHostDir.Close()
         if err != nil {
                 fmt.Printf("[GetSeerPeers] ERR: %s\n", err)
-                return nil
+                return []string{}
         }
         myindex := 0
         found := false
@@ -222,6 +241,9 @@ func GetSeerPeers() []string {
                         found = true
                         break
                 }
+        }
+        if found && len(seerPeers) == 1 {
+                return []string{}
         }
         if found {
                 newPeers := make([]string, len(seerPeers)-1)
@@ -250,6 +272,8 @@ func BootStrap(seeder string, seedee string) {
         }
         message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, seedee)
         SendGossip(message, seeder)
+        /* Trickling self into SeerPeers if single bootstrap host, else this will be big broadcast to default SeerPort. */
+        HowAmINotMyself(udpAddress, seeder)
 }
 
 func BackgroundLoop(name string, seconds int, fns ...func()) {
