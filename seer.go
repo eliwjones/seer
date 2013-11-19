@@ -55,7 +55,7 @@ var (
         lastSeedTS      int64
 )
 
-func main() {
+func init(){
         runtime.GOMAXPROCS(int(runtime.NumCPU() / 2))
         flag.Parse()
 
@@ -75,7 +75,10 @@ func main() {
         SeerHostDir = SeerDataDir + "/host"
         os.MkdirAll(SeerOpDir, 0777)
         os.MkdirAll(SeerDataDir, 0777)
+}
 
+
+func main() {
         /* Single cleanup on start. */
         //TombstoneReaper()
         //AntiEntropy()
