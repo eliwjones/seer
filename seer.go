@@ -30,6 +30,7 @@ type Gossip struct {
         ServiceName string
         ServiceAddr string
         SeerRequest string
+        SeerPath    []string
         Tombstone   bool
         TS          int64
 }
@@ -49,6 +50,7 @@ var (
         listenBroadcast = flag.Bool("listenbroadcast", true, "Can disable listening to broadcast UDP packets.  Useful for testing multiple IPs on same machine.")
         commandList     = map[string]bool{"exit": true, "get": true}
         tsRegexp        = regexp.MustCompile(`[,|{]\s*"TS"\s*:\s*(\d+)\s*[,|}]`)
+        seerPathRegexp  = regexp.MustCompile(`([,|{]\s*)("SeerPath"\s*:\s*\[)(.+?)(\])`)
         gossipSocket    *net.UDPConn
         lastSeedTS      int64
 )
@@ -129,8 +131,54 @@ func SendGossip(gossip string, seerAddr string) {
                 fmt.Printf("[SendGossip] ERR: %s\n", err)
                 return
         }
+        _, err = ExtractTSFromJSON(gossip)
+        if err != nil && err.Error() == "no TS" {
+                newTs := fmt.Sprintf(`,"TS":%d}`, time.Now().Unix())
+                gossip = gossip[:len(gossip)-1] + newTs
+        }
+        _, err = ExtractSeerPathFromJSON(gossip)
+        if err != nil && err.Error() == "no SeerPath" {
+                seerPath := fmt.Sprintf(`,"SeerPath":["%s"]}`, udpAddress)
+                gossip = gossip[:len(gossip)-1] + seerPath
+        } else {
+                gossip = UpdateSeerPath(gossip)
+        }
         fmt.Printf("[SendGossip] gossip: %s\n    TO: %s\n", gossip, seer)
         gossipSocket.WriteToUDP([]byte(gossip), seer)
+}
+
+func FreshGossip(filePath string, newTS int64) bool {
+        serviceData, err := ioutil.ReadFile(filePath)
+        if err != nil {
+                return true
+        }
+        currentTS, err := ExtractTSFromJSON(string(serviceData))
+        return newTS > currentTS
+}
+
+func ExtractSeerPathFromJSON(gossip string) (string, error) {
+        seerPath := seerPathRegexp.FindStringSubmatch(gossip)
+        if len(seerPath) == 5 {
+                return seerPath[3], nil
+        }
+        return "", errors.New("no SeerPath")
+}
+
+func UpdateSeerPath(gossip string) string {
+        return seerPathRegexp.ReplaceAllString(gossip, `$1$2$3,"`+udpAddress+`"$4`)
+}
+
+func ExtractTSFromJSON(gossip string) (int64, error) {
+        /* Looks for "TS" in JSON like:
+           {"TS":<numbers>,...}
+           {...,"TS":<numbers>}
+           {...,"TS":<numbers>,...}
+        */
+        ts := tsRegexp.FindStringSubmatch(gossip)
+        if len(ts) == 2 {
+                return strconv.ParseInt(ts[1], 10, 64)
+        }
+        return 0, errors.New("no TS")
 }
 
 func GossipGossip(gossip string) {
@@ -519,28 +567,6 @@ func PutGossip(gossip string, decodedGossip Gossip) {
         if err != nil {
                 fmt.Printf("Could not PutGossip to: [%s]! Error:\n%s", SeerHostDir+"/"+decodedGossip.SeerAddr, err)
         }
-}
-
-func FreshGossip(filePath string, newTS int64) bool {
-        serviceData, err := ioutil.ReadFile(filePath)
-        if err != nil {
-                return true
-        }
-        currentTS, err := ExtractTSFromJSON(string(serviceData))
-        return newTS > currentTS
-}
-
-func ExtractTSFromJSON(gossip string) (int64, error) {
-        /* Looks for "TS" in JSON like:
-           {"TS":<numbers>,...}
-           {...,"TS":<numbers>}
-           {...,"TS":<numbers>,...}
-        */
-        ts := tsRegexp.FindStringSubmatch(gossip)
-        if len(ts) == 2 {
-                return strconv.ParseInt(ts[1], 10, 64)
-        }
-        return 0, errors.New("Could not find TS.")
 }
 
 func LazyWriteFile(folderName string, fileName string, data []byte) error {
