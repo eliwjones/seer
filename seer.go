@@ -468,7 +468,7 @@ func processSeed(targzpath string) {
                 buf := bytes.NewBuffer(nil)
                 io.Copy(buf, tr)
                 folder := filepath.Dir(SeerDataDir + "/" + hdr.Name)
-                filename := filepath.Base(folder)
+                filename := filepath.Base(SeerDataDir + "/" + hdr.Name)
                 err = LazyWriteFile(folder, filename, buf.Bytes())
                 if err != nil {
                         fmt.Printf("[processSeed] ERRR: %s", err)
