@@ -182,15 +182,60 @@ func ExtractTSFromJSON(gossip string) (int64, error) {
 }
 
 func GossipGossip(gossip string) {
-        fmt.Printf("[GossipGossip] Gossiping Gossip: %s", gossip)
+        fmt.Printf("[GossipGossip] Gossiping Gossip: %s\n", gossip)
+        seerPeers := GetSeerPeers()
+        randIndex := rand.Int() % len(seerPeers)
+        tries := 0
+        seerPath, _ := ExtractSeerPathFromJSON(gossip)
+        fmt.Println("[GossipGossip]: seerPath - " + seerPath)
+        for strings.LastIndex(seerPath, seerPeers[randIndex]) > -1 && tries < 10 {
+                /* Try 10 times to find peer that hasn't seen gossip. */
+                randIndex = rand.Int() % len(seerPeers)
+                tries += 1
+                if tries == 10 {
+                        fmt.Printf("[GossipGossip] Couldn't find SeerPeer to send to.. :(.\nGOSSIP: %s", gossip)
+                        return
+                }
+        }
+        SendGossip(gossip, seerPeers[randIndex])
+}
 
-        /*
-           if HostList > M:
-             return
-           Add self to Gossip HostList.
-           for N random Gossipees:
-             send Gossip
-        */
+func GetSeerPeers() []string {
+        seerHostDir, err := os.Open(SeerHostDir)
+        if err != nil {
+                fmt.Printf("[GetSeerPeers] ERR: %s\n", err)
+                return nil
+        }
+
+        seerPeers, err := seerHostDir.Readdirnames(-1)
+        seerHostDir.Close()
+        if err != nil {
+                fmt.Printf("[GetSeerPeers] ERR: %s\n", err)
+                return nil
+        }
+        myindex := 0
+        found := false
+        for index, seerPeer := range seerPeers {
+                fmt.Println(seerPeer)
+                if seerPeer == udpAddress {
+                        myindex = index
+                        found = true
+                        break
+                }
+        }
+        if found {
+                newPeers := make([]string, len(seerPeers)-1)
+                if myindex == 0 {
+                        copy(newPeers, seerPeers[1:])
+                } else if myindex == len(seerPeers)-1 {
+                        copy(newPeers, seerPeers[:myindex])
+                } else {
+                        copy(newPeers, seerPeers[:myindex])
+                        copy(newPeers[len(seerPeers[:myindex]):], seerPeers[myindex+1:])
+                }
+                seerPeers = newPeers
+        }
+        return seerPeers
 }
 
 func BootStrap(seeder string, seedee string) {
@@ -437,7 +482,6 @@ func UDPServer(ch chan<- string, ipAddress string, port string) {
            "Have" to hack this since want to receive broadcast packets.. yet.. they don't appear to show up
            if net.ListenPacket() gets called on specific IP address?
            Really annoying since prevents listening on same port using different IP addresses on same machine.
-
            Thus, I have added more hack.
         */
         var err error
@@ -520,7 +564,7 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
         PutGossip(gossip, decodedGossip)
 
         /* Spread the word? Or, use GossipOps()? */
-        // GossipGossip(gossip)
+        GossipGossip(gossip)
 }
 
 func VerifyGossip(gossip string) (Gossip, error) {
