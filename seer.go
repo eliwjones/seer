@@ -22,6 +22,7 @@ import (
         "runtime"
         "strconv"
         "strings"
+        "sync"
         "time"
 )
 
@@ -53,9 +54,11 @@ var (
         seerPathRegexp  = regexp.MustCompile(`([,|{]\s*)("SeerPath"\s*:\s*\[)(.+?)(\])`)
         gossipSocket    *net.UDPConn
         lastSeedTS      int64
+
+        wg      sync.WaitGroup
 )
 
-func init(){
+func init() {
         runtime.GOMAXPROCS(int(runtime.NumCPU() / 2))
         flag.Parse()
 
@@ -77,23 +80,20 @@ func init(){
         os.MkdirAll(SeerDataDir, 0777)
 }
 
-
 func main() {
         /* Single cleanup on start. */
         //TombstoneReaper()
         //AntiEntropy()
 
-        /* Set up channels and start servers. */
-        udpServerChannel := make(chan string)
-        serviceServerChannel := make(chan string)
+        wg.Add(1)
 
-        go UDPServer(udpServerChannel, *hostIP, *udpPort)
+        go UDPServer(*hostIP, *udpPort)
         go ServiceServer(tcpAddress)
 
         /*
-            Not really sure how want to build this out.
-            Sort of annoying since need to wait for seed
-            to announce self to peers.
+           Not really sure how want to build this out.
+           Sort of annoying since need to wait for seed
+           to announce self to peers.
         */
         createGossipSocket()
         HowAmINotMyself(udpAddress, udpAddress)
@@ -108,20 +108,9 @@ func main() {
         /* Run background routine for GossipOps() */
         //BackgroundLoop("Gossip Oplog", 1, GossipOps)
 
-        /* Wait for and handle any messages. */
-        for {
-                select {
-                case message := <-udpServerChannel:
-                        if message == "exit" {
-                                fmt.Printf("\nBYE BYE\n")
-                                return
-                        } else if message == "get" {
-                                fmt.Printf("\nGOT A 'GET' COMMAND!\n")
-                        }
-                case message := <-serviceServerChannel:
-                        fmt.Printf("\nServiceServer message: %s\n", message)
-                }
-        }
+        /* What is proper way to wait? */
+        wg.Wait()
+        /* If get here, means wg.Done() called from either UDP or HTTP servers dieing. */
 }
 
 func createGossipSocket() {
@@ -156,9 +145,25 @@ func SendGossip(gossip string, seerAddr string) {
         gossipSocket.WriteToUDP([]byte(gossip), seer)
 }
 
-func HowAmINotMyself(seerAddr string, gossipee string){
+func HowAmINotMyself(seerAddr string, gossipee string) {
         gossip := fmt.Sprintf(`{"SeerAddr":"%s"}`, seerAddr)
         SendGossip(gossip, gossipee)
+}
+
+func BootStrap(seeder string, seedee string) {
+        /* Sexier */
+        if seeder == "magic" {
+                /* Broadcast to whoever.  Must still handle handshake so that not all Seers send their data. */
+                seeder = "255.255.255.255:9999"
+        }
+        if strings.HasPrefix(seeder, "255.") {
+                /* If Broadcasting, must send udpAddress so they can send back "SeedYou" query. */
+                seedee = udpAddress
+        }
+        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, seedee)
+        SendGossip(message, seeder)
+        /* Trickling self into SeerPeers if single bootstrap host, else this will be big broadcast to default SeerPort. */
+        HowAmINotMyself(udpAddress, seeder)
 }
 
 func FreshGossip(filePath string, newTS int64) bool {
@@ -263,55 +268,171 @@ func GetSeerPeers() []string {
         return seerPeers
 }
 
-func BootStrap(seeder string, seedee string) {
-        /* Sexier */
-        if seeder == "magic" {
-                /* Broadcast to whoever.  Must still handle handshake so that not all Seers send their data. */
-                seeder = "255.255.255.255:9999"
-        }
-        if strings.HasPrefix(seeder, "255.") {
-                /* If Broadcasting, must send udpAddress so they can send back "SeedYou" query. */
-                seedee = udpAddress
-        }
-        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, seedee)
-        SendGossip(message, seeder)
-        /* Trickling self into SeerPeers if single bootstrap host, else this will be big broadcast to default SeerPort. */
-        HowAmINotMyself(udpAddress, seeder)
-}
+func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
+        /*
+           1. Write Gossip to gossiplog.
+           2. Share gossip?
+        */
 
-func BackgroundLoop(name string, seconds int, fns ...func()) {
-        go func() {
-                for {
-                        time.Sleep(time.Duration(seconds) * time.Second)
-                        fmt.Printf("\n[%s] : LOOPING : %s\n", time.Now(), name)
-                        for _, f := range fns {
-                                f()
-                        }
+        decodedGossip, err := VerifyGossip(gossip)
+        /* Handle any broadcasted commands first, since basic gossip is not allowed to be broadcast. */
+        if decodedGossip.SeerRequest == "SeedMe" && strings.HasPrefix(destinationIp, "255.") {
+                /* If receive broadcast, send back "SeedYou" query. */
+                if udpAddress == decodedGossip.SeerAddr {
+                        /* No need to seed oneself. */
+                        /* Might be sexier to have SendGossip() block gossip to self? */
+                        return
                 }
-        }()
+                message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedYou"}`, udpAddress)
+                SendGossip(message, decodedGossip.SeerAddr)
+                return
+        } else if decodedGossip.SeerRequest == "SeedMe" {
+                /* Received direct "SeedMe" request.  Send seed. */
+                sendSeed(decodedGossip.SeerAddr)
+                return
+        } else if decodedGossip.SeerRequest == "SeedYou" {
+                /* Seer thinks I want a Seed.. do I? */
+                if time.Now().UnixNano() >= lastSeedTS+1000000000*30 {
+                        fmt.Printf("[SeedYou] Requesting Seed!\n  NOW - THEN = %s", time.Now().UnixNano()-lastSeedTS)
+                        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, tcpAddress)
+                        SendGossip(message, decodedGossip.SeerAddr)
+                } else {
+                        fmt.Printf("[SeedYou] No need to seed!\n  NOW - THEN = %s", time.Now().UnixNano()-lastSeedTS)
+                }
+                return
+        }
+        if err != nil || decodedGossip.SeerAddr == "" || destinationIp != *hostIP {
+                fmt.Printf("\nBad Gossip!: %s\nErr: %s\nDestination: %s\n", gossip, err, destinationIp)
+                return
+        }
+        /* Write to oplog. opName limits updates from single host to 10 per nanosecond.. */
+        opName := fmt.Sprintf("%d_%s_%d", time.Now().UnixNano(), decodedGossip.SeerAddr, (rand.Int()%10)+10)
+        err = LazyWriteFile(SeerOpDir, opName+".op", []byte(gossip))
+        if err != nil {
+                /* Not sure want to panic here.  Move forward at all costs? */
+                panic(err)
+        }
+        /* Save it. */
+        PutGossip(gossip, decodedGossip)
+
+        /* Spread the word? Or, use GossipOps()? */
+        GossipGossip(gossip)
 }
 
-func AntiEntropy() {
+func VerifyGossip(gossip string) (Gossip, error) {
         /*
-           1. Wrapped by background jobs. (Sleep Q seconds then do.)
-           2. Check random host gossip/source (or gossip/services) zip checksum.
-           3. Sync if checksum no match.
-
+           { "SeerAddr" : "remotehost1:9999",
+             "ServiceName" : "mongod",
+             "ServiceAddr" : "remotehost1:2107",
+             "TS" : 123312123123 }
         */
-        fmt.Printf("[AntiEntropy] I grab fill copies of other host dbs occassionally.\n")
+        var g Gossip
+        err := json.Unmarshal([]byte(gossip), &g)
+
+        /* Reflection feels stupid, so bruteforcing it. */
+        /* A Heartbeat is just {SeerAddr,ts}.. so that's all need check. */
+        errorStr := ""
+        if g.SeerAddr == "" {
+                errorStr += ",SeerAddr"
+        }
+        if g.TS == 0 {
+                errorStr += ",TS"
+        }
+        if err == nil && errorStr != "" {
+                err = errors.New(fmt.Sprintf("[%s] are missing!", errorStr[1:len(errorStr)]))
+        }
+        return g, err
 }
 
-func TombstoneReaper() {
+func PutGossip(gossip string, decodedGossip Gossip) {
+        /* Only checking SeerServiceDir for current TS. */
+        /* Current code has odd side effect of allowing Seer data to exist for host even if we missed initial Seer HELO gossip. */
+        /* We leave it to AntiEntropy to patch that up. */
+        if decodedGossip.ServiceName == "" {
+                decodedGossip.ServiceName = "Seer"
+        }
+        if !FreshGossip(SeerServiceDir+"/"+decodedGossip.ServiceName+"/"+decodedGossip.SeerAddr, decodedGossip.TS) {
+                fmt.Printf("[Old Assed Gossip] I ain't writing that.\n")
+                return
+        }
+        err := LazyWriteFile(SeerServiceDir+"/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, []byte(gossip))
+        if err != nil {
+                fmt.Printf("Could not PutGossip to: [%s]! Error:\n%s", SeerServiceDir+"/"+decodedGossip.ServiceName, err)
+        }
+        err = LazyWriteFile(SeerHostDir+"/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, []byte(gossip))
+        if err != nil {
+                fmt.Printf("Could not PutGossip to: [%s]! Error:\n%s", SeerHostDir+"/"+decodedGossip.SeerAddr, err)
+        }
+}
+
+func LazyWriteFile(folderName string, fileName string, data []byte) error {
+        err := ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
+        if err != nil {
+                os.MkdirAll(folderName, 0777)
+                err = ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
+        }
+        return err
+}
+
+func GossipOps() {
         /*
-           1. Wrapped by background jobs. (Sleep Q seconds then do.)
-           2. Remove anything but most recent doc that is older than P seconds.
-           3. Remove remaining docs if they are Tombstoned and older than certain time.
+           1. Pick N random peers.
+           2. Gossip all ops that have occured since last GossipOps() to peers.
+           3. Ops examined by file create date and encoded "ts"?
         */
-        fmt.Printf("[TombstoneReaper] I remove stuff that has been deleted or older timestamped source docs.\n")
+        fmt.Printf("[GossipOps] I grab all (plus some padding?) ops that have appeared since last GossipOps()")
 }
+
+/*******************************************************************************
+    UDP Server
+*******************************************************************************/
+
+func UDPServer(ipAddress string, port string) {
+        /* If UDPServer dies, I don't want to live anymore. */
+        defer wg.Done()
+
+        /*
+           "Have" to hack this since want to receive broadcast packets.. yet.. they don't appear to show up
+           if net.ListenPacket() gets called on specific IP address?
+           Really annoying since prevents listening on same port using different IP addresses on same machine.
+           Thus, I have added more hack.
+        */
+        var err error
+        var c net.PacketConn
+
+        if *listenBroadcast {
+                c, err = net.ListenPacket("udp", ":"+port)
+        } else {
+                c, err = net.ListenPacket("udp", udpAddress)
+        }
+        if err != nil {
+                log.Fatal(err)
+        }
+        defer c.Close()
+        udpLn := ipv4.NewPacketConn(c)
+        err = udpLn.SetControlMessage(ipv4.FlagDst, true)
+        if err != nil {
+                log.Fatal(err)
+        }
+        udpBuff := make([]byte, 256)
+        for {
+                n, cm, _, err := udpLn.ReadFrom(udpBuff)
+                if err != nil {
+                        log.Fatal(err)
+                }
+                message := strings.Trim(string(udpBuff[:n]), "\n")
+                go ProcessGossip(message, cm.Src.String(), cm.Dst.String())
+        }
+}
+
+/*******************************************************************************
+    HTTP related and seeding functions.
+*******************************************************************************/
 
 func ServiceServer(address string) {
-        fmt.Printf("[ServiceServer] Can query for service by name.\nI listen on %s\n", address)
+        /* If HTTPServer dies, guess I don't want to live anymore either. */
+        defer wg.Done()
+
         http.HandleFunc("/", ServiceHandler)
         http.ListenAndServe(address, nil)
 }
@@ -504,156 +625,37 @@ func processSeed(targzpath string) {
         return
 }
 
-func UDPServer(ch chan<- string, ipAddress string, port string) {
-        /*
-           "Have" to hack this since want to receive broadcast packets.. yet.. they don't appear to show up
-           if net.ListenPacket() gets called on specific IP address?
-           Really annoying since prevents listening on same port using different IP addresses on same machine.
-           Thus, I have added more hack.
-        */
-        var err error
-        var c net.PacketConn
+/*******************************************************************************
+    Background work related stuffs.
+*******************************************************************************/
 
-        if *listenBroadcast {
-                c, err = net.ListenPacket("udp", ":"+port)
-        } else {
-                c, err = net.ListenPacket("udp", udpAddress)
-        }
-        if err != nil {
-                log.Fatal(err)
-        }
-        defer c.Close()
-        udpLn := ipv4.NewPacketConn(c)
-        err = udpLn.SetControlMessage(ipv4.FlagDst, true)
-        if err != nil {
-                log.Fatal(err)
-        }
-        udpBuff := make([]byte, 256)
-        for {
-                n, cm, _, err := udpLn.ReadFrom(udpBuff)
-                if err != nil {
-                        log.Fatal(err)
+func BackgroundLoop(name string, seconds int, fns ...func()) {
+        go func() {
+                for {
+                        time.Sleep(time.Duration(seconds) * time.Second)
+                        fmt.Printf("\n[%s] : LOOPING : %s\n", time.Now(), name)
+                        for _, f := range fns {
+                                f()
+                        }
                 }
-                message := strings.Trim(string(udpBuff[:n]), "\n")
-                if commandList[message] {
-                        ch <- message
-                } else {
-                        go ProcessGossip(message, cm.Src.String(), cm.Dst.String())
-                }
-        }
+        }()
 }
 
-func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
+func AntiEntropy() {
         /*
-           1. Write Gossip to gossiplog.
-           2. Share gossip?
+           1. Wrapped by background jobs. (Sleep Q seconds then do.)
+           2. Check random host gossip/source (or gossip/services) zip checksum.
+           3. Sync if checksum no match.
+
         */
-
-        decodedGossip, err := VerifyGossip(gossip)
-        /* Handle any broadcasted commands first, since basic gossip is not allowed to be broadcast. */
-        if decodedGossip.SeerRequest == "SeedMe" && strings.HasPrefix(destinationIp, "255.") {
-                /* If receive broadcast, send back "SeedYou" query. */
-                if udpAddress == decodedGossip.SeerAddr {
-                        /* No need to seed oneself. */
-                        /* Might be sexier to have SendGossip() block gossip to self? */
-                        return
-                }
-                message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedYou"}`, udpAddress)
-                SendGossip(message, decodedGossip.SeerAddr)
-                return
-        } else if decodedGossip.SeerRequest == "SeedMe" {
-                /* Received direct "SeedMe" request.  Send seed. */
-                sendSeed(decodedGossip.SeerAddr)
-                return
-        } else if decodedGossip.SeerRequest == "SeedYou" {
-                /* Seer thinks I want a Seed.. do I? */
-                if time.Now().UnixNano() >= lastSeedTS+1000000000*30 {
-                        fmt.Printf("[SeedYou] Requesting Seed!\n  NOW - THEN = %s", time.Now().UnixNano()-lastSeedTS)
-                        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, tcpAddress)
-                        SendGossip(message, decodedGossip.SeerAddr)
-                } else {
-                        fmt.Printf("[SeedYou] No need to seed!\n  NOW - THEN = %s", time.Now().UnixNano()-lastSeedTS)
-                }
-                return
-        }
-        if err != nil || decodedGossip.SeerAddr == "" || destinationIp != *hostIP {
-                fmt.Printf("\nBad Gossip!: %s\nErr: %s\nDestination: %s\n", gossip, err, destinationIp)
-                return
-        }
-        /* Write to oplog. opName limits updates from single host to 10 per nanosecond.. */
-        opName := fmt.Sprintf("%d_%s_%d", time.Now().UnixNano(), decodedGossip.SeerAddr, (rand.Int()%10)+10)
-        err = LazyWriteFile(SeerOpDir, opName+".op", []byte(gossip))
-        if err != nil {
-                /* Not sure want to panic here.  Move forward at all costs? */
-                panic(err)
-        }
-        /* Save it. */
-        PutGossip(gossip, decodedGossip)
-
-        /* Spread the word? Or, use GossipOps()? */
-        GossipGossip(gossip)
+        fmt.Printf("[AntiEntropy] I grab fill copies of other host dbs occassionally.\n")
 }
 
-func VerifyGossip(gossip string) (Gossip, error) {
+func TombstoneReaper() {
         /*
-           { "SeerAddr" : "remotehost1:9999",
-             "ServiceName" : "mongod",
-             "ServiceAddr" : "remotehost1:2107",
-             "TS" : 123312123123 }
+           1. Wrapped by background jobs. (Sleep Q seconds then do.)
+           2. Remove anything but most recent doc that is older than P seconds.
+           3. Remove remaining docs if they are Tombstoned and older than certain time.
         */
-        var g Gossip
-        err := json.Unmarshal([]byte(gossip), &g)
-
-        /* Reflection feels stupid, so bruteforcing it. */
-        /* A Heartbeat is just {SeerAddr,ts}.. so that's all need check. */
-        errorStr := ""
-        if g.SeerAddr == "" {
-                errorStr += ",SeerAddr"
-        }
-        if g.TS == 0 {
-                errorStr += ",TS"
-        }
-        if err == nil && errorStr != "" {
-                err = errors.New(fmt.Sprintf("[%s] are missing!", errorStr[1:len(errorStr)]))
-        }
-        return g, err
-}
-
-func PutGossip(gossip string, decodedGossip Gossip) {
-        /* Only checking SeerServiceDir for current TS. */
-        /* Current code has odd side effect of allowing Seer data to exist for host even if we missed initial Seer HELO gossip. */
-        /* We leave it to AntiEntropy to patch that up. */
-        if decodedGossip.ServiceName == "" {
-                decodedGossip.ServiceName = "Seer"
-        }
-        if !FreshGossip(SeerServiceDir+"/"+decodedGossip.ServiceName+"/"+decodedGossip.SeerAddr, decodedGossip.TS) {
-                fmt.Printf("[Old Assed Gossip] I ain't writing that.\n")
-                return
-        }
-        err := LazyWriteFile(SeerServiceDir+"/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, []byte(gossip))
-        if err != nil {
-                fmt.Printf("Could not PutGossip to: [%s]! Error:\n%s", SeerServiceDir+"/"+decodedGossip.ServiceName, err)
-        }
-        err = LazyWriteFile(SeerHostDir+"/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, []byte(gossip))
-        if err != nil {
-                fmt.Printf("Could not PutGossip to: [%s]! Error:\n%s", SeerHostDir+"/"+decodedGossip.SeerAddr, err)
-        }
-}
-
-func LazyWriteFile(folderName string, fileName string, data []byte) error {
-        err := ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
-        if err != nil {
-                os.MkdirAll(folderName, 0777)
-                err = ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
-        }
-        return err
-}
-
-func GossipOps() {
-        /*
-           1. Pick N random peers.
-           2. Gossip all ops that have occured since last GossipOps() to peers.
-           3. Ops examined by file create date and encoded "ts"?
-        */
-        fmt.Printf("[GossipOps] I grab all (plus some padding?) ops that have appeared since last GossipOps()")
+        fmt.Printf("[TombstoneReaper] I remove stuff that has been deleted or older timestamped source docs.\n")
 }
