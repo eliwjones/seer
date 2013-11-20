@@ -64,7 +64,7 @@ func init() {
 
         if *hostIP == "" {
                 fmt.Printf("Please pass -ip=W.X.Y.Z\n")
-                return
+                os.Exit(1)
         }
 
         udpAddress = *hostIP + ":" + *udpPort
@@ -87,7 +87,8 @@ func main() {
 
         wg.Add(1)
 
-        go UDPServer(*hostIP, *udpPort)
+        udpready := make(chan string)
+        go UDPServer(udpready, *hostIP, *udpPort)
         go ServiceServer(tcpAddress)
 
         /*
@@ -96,7 +97,14 @@ func main() {
            to announce self to peers.
         */
         createGossipSocket()
-        HowAmINotMyself(udpAddress, udpAddress)
+        /* Must wait for UDPServer to be ready. */
+        ready := <-udpready
+        if ready == "ready" {
+                HowAmINotMyself(udpAddress, udpAddress)
+        } else {
+                fmt.Println("NOT READY!: " + ready)
+                os.Exit(1)
+        }
 
         if *bootstrap != "" {
                 BootStrap(*bootstrap, tcpAddress)
@@ -313,10 +321,13 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
                 panic(err)
         }
         /* Save it. */
-        PutGossip(gossip, decodedGossip)
+        put := PutGossip(gossip, decodedGossip)
 
-        /* Spread the word? Or, use GossipOps()? */
-        GossipGossip(gossip)
+        /* put == true implies gossip was "fresh".  Thus, spread the good news. */
+        if put {
+                /* Spread the word? Or, use GossipOps()? */
+                GossipGossip(gossip)
+        }
 }
 
 func VerifyGossip(gossip string) (Gossip, error) {
@@ -344,7 +355,7 @@ func VerifyGossip(gossip string) (Gossip, error) {
         return g, err
 }
 
-func PutGossip(gossip string, decodedGossip Gossip) {
+func PutGossip(gossip string, decodedGossip Gossip) bool {
         /* Only checking SeerServiceDir for current TS. */
         /* Current code has odd side effect of allowing Seer data to exist for host even if we missed initial Seer HELO gossip. */
         /* We leave it to AntiEntropy to patch that up. */
@@ -353,7 +364,7 @@ func PutGossip(gossip string, decodedGossip Gossip) {
         }
         if !FreshGossip(SeerServiceDir+"/"+decodedGossip.ServiceName+"/"+decodedGossip.SeerAddr, decodedGossip.TS) {
                 fmt.Printf("[Old Assed Gossip] I ain't writing that.\n")
-                return
+                return false
         }
         err := LazyWriteFile(SeerServiceDir+"/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, []byte(gossip))
         if err != nil {
@@ -363,6 +374,7 @@ func PutGossip(gossip string, decodedGossip Gossip) {
         if err != nil {
                 fmt.Printf("Could not PutGossip to: [%s]! Error:\n%s", SeerHostDir+"/"+decodedGossip.SeerAddr, err)
         }
+        return true
 }
 
 func LazyWriteFile(folderName string, fileName string, data []byte) error {
@@ -387,7 +399,7 @@ func GossipOps() {
     UDP Server
 *******************************************************************************/
 
-func UDPServer(ipAddress string, port string) {
+func UDPServer(udpready chan string, ipAddress string, port string) {
         /* If UDPServer dies, I don't want to live anymore. */
         defer wg.Done()
 
@@ -415,6 +427,7 @@ func UDPServer(ipAddress string, port string) {
                 log.Fatal(err)
         }
         udpBuff := make([]byte, 256)
+        udpready <- "ready"
         for {
                 n, cm, _, err := udpLn.ReadFrom(udpBuff)
                 if err != nil {
