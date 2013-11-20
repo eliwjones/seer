@@ -87,7 +87,7 @@ func main() {
 
         wg.Add(1)
 
-        udpready := make(chan string)
+        udpready := make(chan bool)
         go UDPServer(udpready, *hostIP, *udpPort)
         go ServiceServer(tcpAddress)
 
@@ -99,10 +99,10 @@ func main() {
         createGossipSocket()
         /* Must wait for UDPServer to be ready. */
         ready := <-udpready
-        if ready == "ready" {
+        if ready {
                 HowAmINotMyself(udpAddress, udpAddress)
         } else {
-                fmt.Println("NOT READY!: " + ready)
+                fmt.Println("UDPServer NOT READY!")
                 os.Exit(1)
         }
 
@@ -399,7 +399,7 @@ func GossipOps() {
     UDP Server
 *******************************************************************************/
 
-func UDPServer(udpready chan string, ipAddress string, port string) {
+func UDPServer(udpready chan bool, ipAddress string, port string) {
         /* If UDPServer dies, I don't want to live anymore. */
         defer wg.Done()
 
@@ -427,7 +427,7 @@ func UDPServer(udpready chan string, ipAddress string, port string) {
                 log.Fatal(err)
         }
         udpBuff := make([]byte, 256)
-        udpready <- "ready"
+        udpready <- true
         for {
                 n, cm, _, err := udpLn.ReadFrom(udpBuff)
                 if err != nil {
