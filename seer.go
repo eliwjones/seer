@@ -367,7 +367,7 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
                 }
                 return
         }
-        if err != nil || decodedGossip.SeerAddr == "" || destinationIp != *hostIP {
+        if err != nil || decodedGossip.SeerAddr == "" || (destinationIp != *hostIP && !strings.HasPrefix(destinationIp, "255.")) {
                 fmt.Printf("\nBad Gossip!: %s\nErr: %s\nDestination: %s\n", gossip, err, destinationIp)
                 return
         }
