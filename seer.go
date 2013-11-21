@@ -37,30 +37,47 @@ type Gossip struct {
 }
 
 var (
-        SeerRoot        string
-        SeerOpDir       string
-        SeerDataDir     string
-        SeerServiceDir  string
-        SeerHostDir     string
-        udpAddress      string
-        tcpAddress      string
+        SeerRoot       string
+        SeerOpDir      string
+        SeerDataDir    string
+        SeerServiceDir string
+        SeerHostDir    string
+        udpAddress     string
+        tcpAddress     string
+        gossipSocket   *net.UDPConn
+        lastSeedTS     int64
+        wg             sync.WaitGroup
+        seerReady      chan bool
+        logCounter     chan bool
+        gossipCount    int
+
+        /* Defined variables go here. */
+        commandList    = map[string]bool{"exit": true, "get": true}
+        tsRegexp       = regexp.MustCompile(`[,|{]\s*"TS"\s*:\s*(\d+)\s*[,|}]`)
+        seerPathRegexp = regexp.MustCompile(`([,|{]\s*)("SeerPath"\s*:\s*\[)(.+?)(\])`)
+
+        /* Flags go here */
         hostIP          = flag.String("ip", "", "REQUIRED! IP address to communicate with other Seers from.")
         udpPort         = flag.String("udp", "9999", "<port> to use for UDP server. Default is: 9999")
         tcpPort         = flag.String("tcp", "9998", "<port> to use for HTTP server.  Default is: 9998")
         bootstrap       = flag.String("bootstrap", "", "<host>:<udp port> for Seer Host to request seed from. Use -bootstrap=magic to search.")
         listenBroadcast = flag.Bool("listenbroadcast", true, "Can disable listening to broadcast UDP packets.  Useful for testing multiple IPs on same machine.")
-        commandList     = map[string]bool{"exit": true, "get": true}
-        tsRegexp        = regexp.MustCompile(`[,|{]\s*"TS"\s*:\s*(\d+)\s*[,|}]`)
-        seerPathRegexp  = regexp.MustCompile(`([,|{]\s*)("SeerPath"\s*:\s*\[)(.+?)(\])`)
-        gossipSocket    *net.UDPConn
-        lastSeedTS      int64
 
-        wg      sync.WaitGroup
+        /* Testing Flags */
+        messageLoss  = flag.Int("messageloss", 0, "Use to simulate percent message loss. e.g. --messageloss=10 implies 10% dropped messages.")
+        messageDelay = flag.Int("messagedelay", 0, "Use to simulate millisecond delay in communication between Seers. e.g. --messagedelay=100 waits 100ms before sending.")
+        logCounts    = flag.Bool("logcounts", false, "Bool flag for locally logging number of SendGossip calls.  Can then aggregate total messages sent.  e.g. --logcounts=true")
 )
 
 func init() {
         runtime.GOMAXPROCS(int(runtime.NumCPU() / 2))
         flag.Parse()
+
+        if *logCounts {
+                logCounter = make(chan bool, 100)
+        }
+        gossipCount = 0
+        seerReady = make(chan bool, 1)
 
         if *hostIP == "" {
                 fmt.Printf("Please pass -ip=W.X.Y.Z\n")
@@ -85,10 +102,7 @@ func main() {
         //TombstoneReaper()
         //AntiEntropy()
 
-        wg.Add(1)
-
-        udpready := make(chan bool)
-        go UDPServer(udpready, *hostIP, *udpPort)
+        go UDPServer(*hostIP, *udpPort)
         go ServiceServer(tcpAddress)
 
         /*
@@ -98,7 +112,7 @@ func main() {
         */
         createGossipSocket()
         /* Must wait for UDPServer to be ready. */
-        ready := <-udpready
+        ready := <-seerReady
         if ready {
                 HowAmINotMyself(udpAddress, udpAddress)
         } else {
@@ -116,9 +130,17 @@ func main() {
         /* Run background routine for GossipOps() */
         //BackgroundLoop("Gossip Oplog", 1, GossipOps)
 
-        /* What is proper way to wait? */
-        wg.Wait()
-        /* If get here, means wg.Done() called from either UDP or HTTP servers dieing. */
+        for {
+                select {
+                case <-logCounter:
+                        gossipCount += 1
+                        fmt.Printf("[logCounter] gossip count: %d\n", gossipCount)
+                case <-seerReady:
+                        /* Someone sent false to seerReady, so shut down. */
+                        fmt.Println("[seerReady] Seer is un-ready. Shutting down.")
+                        os.Exit(1)
+                }
+        }
 }
 
 func createGossipSocket() {
@@ -131,6 +153,21 @@ func createGossipSocket() {
 }
 
 func SendGossip(gossip string, seerAddr string) {
+        /* Implement simulated Message Loss and Delays here. */
+        if *messageLoss > 0 && rand.Intn(100) < *messageLoss {
+                fmt.Printf("[SendGossip] Simulated message loss of %d%\n", *messageLoss)
+                return
+        }
+        if *messageDelay > 0 {
+                fmt.Printf("[SendGossip] messagedelay of %dms\n", *messageDelay)
+                time.Sleep(time.Duration(*messageDelay) * time.Millisecond)
+        }
+        /* Also, log gossip counts here?  Or at server? */
+        if *logCounts {
+                /* Inc some global counter? */
+                logCounter <- true
+        }
+
         seer, err := net.ResolveUDPAddr("udp4", seerAddr)
         if err != nil {
                 fmt.Printf("[SendGossip] ERR: %s\n", err)
@@ -399,9 +436,9 @@ func GossipOps() {
     UDP Server
 *******************************************************************************/
 
-func UDPServer(udpready chan bool, ipAddress string, port string) {
+func UDPServer(ipAddress string, port string) {
         /* If UDPServer dies, I don't want to live anymore. */
-        defer wg.Done()
+        defer func() { seerReady <- false }()
 
         /*
            "Have" to hack this since want to receive broadcast packets.. yet.. they don't appear to show up
@@ -427,13 +464,16 @@ func UDPServer(udpready chan bool, ipAddress string, port string) {
                 log.Fatal(err)
         }
         udpBuff := make([]byte, 256)
-        udpready <- true
+        seerReady <- true
         for {
                 n, cm, _, err := udpLn.ReadFrom(udpBuff)
                 if err != nil {
                         log.Fatal(err)
                 }
                 message := strings.Trim(string(udpBuff[:n]), "\n")
+                if message == "exit" {
+                        return
+                }
                 go ProcessGossip(message, cm.Src.String(), cm.Dst.String())
         }
 }
