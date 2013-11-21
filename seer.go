@@ -13,6 +13,7 @@ import (
         "io"
         "io/ioutil"
         "log"
+        "math"
         "math/rand"
         "net"
         "net/http"
@@ -20,6 +21,7 @@ import (
         "path/filepath"
         "regexp"
         "runtime"
+        "sort"
         "strconv"
         "strings"
         "sync"
@@ -72,6 +74,8 @@ var (
 func init() {
         runtime.GOMAXPROCS(int(runtime.NumCPU() / 2))
         flag.Parse()
+
+        rand.Seed(time.Now().UTC().UnixNano())
 
         if *logCounts {
                 logCounter = make(chan bool, 100)
@@ -211,17 +215,17 @@ func BootStrap(seeder string, seedee string) {
         HowAmINotMyself(udpAddress, seeder)
 }
 
-func FreshGossip(filePath string, newTS int64) bool {
+func FreshGossip(filePath string, newTS int64) (bool, string) {
         serviceData, err := ioutil.ReadFile(filePath)
         if err != nil {
                 fmt.Printf("[FreshGossip] Could not read existing gossip. filePath: [%s]\n", filePath)
-                return true
+                return true, ""
         }
         currentTS, err := ExtractTSFromJSON(string(serviceData))
         if err != nil {
                 fmt.Printf("[FreshGossip] Not TS found. serviceData: [%s]\n", string(serviceData))
         }
-        return newTS > currentTS
+        return newTS > currentTS, string(serviceData)
 }
 
 func ExtractSeerPathFromJSON(gossip string) (string, error) {
@@ -249,30 +253,58 @@ func ExtractTSFromJSON(gossip string) (int64, error) {
         return 0, errors.New("no TS")
 }
 
+func ChooseNFromM(n int, m int) []int {
+        if m > 4*n {
+                return ChooseNFromMNonDeterministically(n, m)
+        }
+        indexArray := make([]int, m)
+        for i := 0; i < m; i++ {
+                indexArray[i] = i
+        }
+        intSlice := sort.IntSlice(indexArray)
+        /* Do the Knuth shuffle. */
+        /* Can this really be better than randomly choosing over and over? */
+        i := m
+        for i > 0 {
+                i = i - 1
+                j := rand.Intn(i + 1)
+                intSlice.Swap(i, j)
+        }
+        return intSlice[:n]
+}
+
+func ChooseNFromMNonDeterministically(n int, m int) []int {
+        intSlice := make([]int, n)
+        tracker := map[int]bool{}
+        index := 0
+        for index < n {
+                intSlice[index] = rand.Intn(m)
+                if tracker[intSlice[index]] {
+                        continue
+                }
+                tracker[intSlice[index]] = true
+                index += 1
+        }
+        return intSlice
+}
+
 func GossipGossip(gossip string) {
         fmt.Printf("[GossipGossip] Gossiping Gossip: %s\n", gossip)
-        seerPeers := GetSeerPeers()
+        seerPath, _ := ExtractSeerPathFromJSON(gossip)
+        seerPeers := GetSeerPeers(seerPath)
         if len(seerPeers) == 0 {
                 fmt.Println("[GossipGossip] No peers! No one to gossip with.")
                 return
         }
-        randIndex := rand.Int() % len(seerPeers)
-        tries := 0
-        seerPath, _ := ExtractSeerPathFromJSON(gossip)
-        fmt.Println("[GossipGossip]: seerPath - " + seerPath)
-        for strings.LastIndex(seerPath, seerPeers[randIndex]) > -1 && tries < 10 {
-                /* Try 10 times to find peer that hasn't seen gossip. */
-                randIndex = rand.Int() % len(seerPeers)
-                tries += 1
-                if tries == 10 {
-                        fmt.Printf("[GossipGossip] Couldn't find SeerPeer to send to.. :(.\nGOSSIP: %s", gossip)
-                        return
-                }
+        gossipees := int(math.Log2(float64(len(seerPeers)))) + 1
+        fmt.Printf("GOssipees: %d\nSeerPeers: %v\n", gossipees, seerPeers)
+        randIndices := ChooseNFromM(gossipees, len(seerPeers))
+        for _, randIndex := range randIndices {
+                SendGossip(gossip, seerPeers[randIndex])
         }
-        SendGossip(gossip, seerPeers[randIndex])
 }
 
-func GetSeerPeers() []string {
+func GetSeerPeers(filters ...string) []string {
         seerHostDir, err := os.Open(SeerHostDir)
         if err != nil {
                 fmt.Printf("[GetSeerPeers] ERR: %s\n", err)
@@ -285,30 +317,19 @@ func GetSeerPeers() []string {
                 fmt.Printf("[GetSeerPeers] ERR: %s\n", err)
                 return []string{}
         }
-        myindex := 0
-        found := false
-        for index, seerPeer := range seerPeers {
-                fmt.Println(seerPeer)
-                if seerPeer == udpAddress {
-                        myindex = index
-                        found = true
-                        break
+        seerMap := map[string]bool{}
+        for _, seerPeer := range seerPeers {
+                seerMap[seerPeer] = true
+        }
+        delete(seerMap, udpAddress)
+        for _, filter := range filters {
+                for _, seerPeer := range strings.Split(filter, ",") {
+                        delete(seerMap, seerPeer)
                 }
         }
-        if found && len(seerPeers) == 1 {
-                return []string{}
-        }
-        if found {
-                newPeers := make([]string, len(seerPeers)-1)
-                if myindex == 0 {
-                        copy(newPeers, seerPeers[1:])
-                } else if myindex == len(seerPeers)-1 {
-                        copy(newPeers, seerPeers[:myindex])
-                } else {
-                        copy(newPeers, seerPeers[:myindex])
-                        copy(newPeers[len(seerPeers[:myindex]):], seerPeers[myindex+1:])
-                }
-                seerPeers = newPeers
+        seerPeers = make([]string, 0, len(seerMap))
+        for seerPeer, _ := range seerMap {
+                seerPeers = append(seerPeers, seerPeer)
         }
         return seerPeers
 }
@@ -358,12 +379,14 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
                 panic(err)
         }
         /* Save it. */
-        put := PutGossip(gossip, decodedGossip)
+        put, fresherGossip := PutGossip(gossip, decodedGossip)
 
         /* put == true implies gossip was "fresh".  Thus, spread the good news. */
         if put {
                 /* Spread the word? Or, use GossipOps()? */
                 GossipGossip(gossip)
+        } else if fresherGossip != "" {
+                /* Merge SeerPaths and re-gossip?  Annotate if already a re-gossip? */
         }
 }
 
@@ -392,16 +415,17 @@ func VerifyGossip(gossip string) (Gossip, error) {
         return g, err
 }
 
-func PutGossip(gossip string, decodedGossip Gossip) bool {
+func PutGossip(gossip string, decodedGossip Gossip) (bool, string) {
         /* Only checking SeerServiceDir for current TS. */
         /* Current code has odd side effect of allowing Seer data to exist for host even if we missed initial Seer HELO gossip. */
         /* We leave it to AntiEntropy to patch that up. */
         if decodedGossip.ServiceName == "" {
                 decodedGossip.ServiceName = "Seer"
         }
-        if !FreshGossip(SeerServiceDir+"/"+decodedGossip.ServiceName+"/"+decodedGossip.SeerAddr, decodedGossip.TS) {
+        fresh, currentGossip := FreshGossip(SeerServiceDir+"/"+decodedGossip.ServiceName+"/"+decodedGossip.SeerAddr, decodedGossip.TS)
+        if !fresh {
                 fmt.Printf("[Old Assed Gossip] I ain't writing that.\n")
-                return false
+                return false, currentGossip
         }
         err := LazyWriteFile(SeerServiceDir+"/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, []byte(gossip))
         if err != nil {
@@ -411,7 +435,7 @@ func PutGossip(gossip string, decodedGossip Gossip) bool {
         if err != nil {
                 fmt.Printf("Could not PutGossip to: [%s]! Error:\n%s", SeerHostDir+"/"+decodedGossip.SeerAddr, err)
         }
-        return true
+        return true, ""
 }
 
 func LazyWriteFile(folderName string, fileName string, data []byte) error {
