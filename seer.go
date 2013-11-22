@@ -18,6 +18,7 @@ import (
         "net"
         "net/http"
         "os"
+        "os/signal"
         "path/filepath"
         "regexp"
         "runtime"
@@ -54,9 +55,10 @@ var (
         gossipCount    int
 
         /* Defined variables go here. */
-        commandList    = map[string]bool{"exit": true, "get": true}
-        tsRegexp       = regexp.MustCompile(`[,|{]\s*"TS"\s*:\s*(\d+)\s*[,|}]`)
-        seerPathRegexp = regexp.MustCompile(`([,|{]\s*)("SeerPath"\s*:\s*\[)(.+?)(\])`)
+        commandList     = map[string]bool{"exit": true, "get": true}
+        tsRegexp        = regexp.MustCompile(`(,?\s*)("TS"\s*:\s*)(\d+)(\s*[,|}])`)
+        seerPathRegexp  = regexp.MustCompile(`(,?\s*)("SeerPath"\s*:\s*\[)(.+?)(\]\s*,?)`)
+        tombstoneRegexp = regexp.MustCompile(`(,?\s*)("Tombstone"\s*:\s*)(true)(\s*,?)`)
 
         /* Flags go here */
         hostIP          = flag.String("ip", "", "REQUIRED! IP address to communicate with other Seers from.")
@@ -72,10 +74,9 @@ var (
 )
 
 func init() {
+        rand.Seed(time.Now().UTC().UnixNano())
         runtime.GOMAXPROCS(int(runtime.NumCPU() / 2))
         flag.Parse()
-
-        rand.Seed(time.Now().UTC().UnixNano())
 
         if *logCounts {
                 logCounter = make(chan bool, 100)
@@ -102,6 +103,9 @@ func init() {
 }
 
 func main() {
+        signaler := make(chan os.Signal, 1)
+        signal.Notify(signaler, os.Interrupt, os.Kill)
+
         /* Single cleanup on start. */
         //TombstoneReaper()
         //AntiEntropy()
@@ -139,9 +143,15 @@ func main() {
                 case <-logCounter:
                         gossipCount += 1
                         fmt.Printf("[logCounter] gossip count: %d\n", gossipCount)
-                case <-seerReady:
-                        /* Someone sent false to seerReady, so shut down. */
-                        fmt.Println("[seerReady] Seer is un-ready. Shutting down.")
+                case ready := <-seerReady:
+                        if !ready {
+                                /* Someone sent false to seerReady, so shut down. */
+                                fmt.Println("[seerReady] Seer is un-ready. Shutting down.")
+                                os.Exit(1)
+                        }
+                case mySignal := <-signaler:
+                        fmt.Println("Got Signal: ", mySignal)
+                        TombstoneServices(udpAddress)
                         os.Exit(1)
                 }
         }
@@ -194,6 +204,24 @@ func SendGossip(gossip string, seerAddr string) {
         gossipSocket.WriteToUDP([]byte(gossip), seer)
 }
 
+func TombstoneServices(seerAddress string) {
+        /* For all my services, Gossip out Tombstones. */
+        myServices := getServiceDataArray(seerAddress, "seer")
+        for _, service := range myServices {
+                gossip := RemoveSeerPath(UpdateTS(service))
+                gossip = fmt.Sprintf(`%s,"Tombstone":true}`, gossip[:len(gossip)-1])
+                GossipGossip(gossip)
+        }
+}
+
+func RaiseServicesFromTheDead(seerAddress string) {
+        myServices := getServiceDataArray(seerAddress, "seer")
+        for _, service := range myServices {
+                gossip := RemoveTombstone(RemoveSeerPath(UpdateTS(service)))
+                GossipGossip(gossip)
+        }
+}
+
 func HowAmINotMyself(seerAddr string, gossipee string) {
         gossip := fmt.Sprintf(`{"SeerAddr":"%s"}`, seerAddr)
         SendGossip(gossip, gossipee)
@@ -237,7 +265,15 @@ func ExtractSeerPathFromJSON(gossip string) (string, error) {
 }
 
 func UpdateSeerPath(gossip string) string {
-        return seerPathRegexp.ReplaceAllString(gossip, `$1$2$3,"`+udpAddress+`"$4`)
+        return seerPathRegexp.ReplaceAllString(gossip, `${1}${2}${3},"`+udpAddress+`"${4}`)
+}
+
+func RemoveSeerPath(gossip string) string {
+        return seerPathRegexp.ReplaceAllString(gossip, ``)
+}
+
+func RemoveTombstone(gossip string) string {
+        return tombstoneRegexp.ReplaceAllString(gossip, ``)
 }
 
 func ExtractTSFromJSON(gossip string) (int64, error) {
@@ -247,10 +283,15 @@ func ExtractTSFromJSON(gossip string) (int64, error) {
            {...,"TS":<numbers>,...}
         */
         ts := tsRegexp.FindStringSubmatch(gossip)
-        if len(ts) == 2 {
-                return strconv.ParseInt(ts[1], 10, 64)
+        if len(ts) == 5 {
+                return strconv.ParseInt(ts[3], 10, 64)
         }
         return 0, errors.New("no TS")
+}
+
+func UpdateTS(gossip string) string {
+        newTS := fmt.Sprintf("%d", time.Now().Unix())
+        return tsRegexp.ReplaceAllString(gossip, `${1}${2}`+newTS+`${4}`)
 }
 
 func ChooseNFromM(n int, m int) []int {
@@ -557,32 +598,34 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
         }
 }
 
-func getServiceData(name string, requestType string) string {
+func getServiceDataArray(name string, requestType string) []string {
         var servicePath string
         if requestType == "service" {
                 servicePath = SeerServiceDir + "/" + name
         } else if requestType == "seer" {
                 servicePath = SeerHostDir + "/" + name
         }
-
         serviceHosts, _ := ioutil.ReadDir(servicePath)
         /* read files from servicePath, append to jsonPayload. */
-        jsonPayload := ""
+        servicesArray := make([]string, 0, len(serviceHosts))
         for _, serviceHost := range serviceHosts {
                 if serviceHost.IsDir() {
                         continue
                 }
                 serviceData, err := ioutil.ReadFile(servicePath + "/" + serviceHost.Name())
                 if err == nil {
-                        jsonPayload += fmt.Sprintf("%s,", string(serviceData))
+                        servicesArray = append(servicesArray, string(serviceData))
                 } else {
-                        jsonPayload += fmt.Sprintf("ERROR: %s\nFILE: %s", err, serviceHost.Name())
+                        err := fmt.Sprintf("[getServiceData] ERROR: %s\nFILE: %s", err, serviceHost.Name())
+                        fmt.Println(err)
                 }
         }
-        if len(jsonPayload) > 0 {
-                jsonPayload = jsonPayload[:len(jsonPayload)-1]
-        }
-        return "[" + jsonPayload + "]"
+        return servicesArray
+}
+
+func getServiceData(name string, requestType string) string {
+        /* Construct JSON Array.  */
+        return fmt.Sprintf(`[%s]`, strings.Join(getServiceDataArray(name, requestType), ","))
 }
 
 // Once receive UDP notification that seerDestinationAddr needs seed
