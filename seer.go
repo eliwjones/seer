@@ -66,6 +66,7 @@ var (
         tcpPort         = flag.String("tcp", "9998", "<port> to use for HTTP server.  Default is: 9998")
         bootstrap       = flag.String("bootstrap", "", "<host>:<udp port> for Seer Host to request seed from. Use -bootstrap=magic to search.")
         listenBroadcast = flag.Bool("listenbroadcast", true, "Can disable listening to broadcast UDP packets.  Useful for testing multiple IPs on same machine.")
+        raiseTheDead    = flag.Bool("raisethedead", false, "Will gossip out that all previously Tombstone-d services are now up.")
 
         /* Testing Flags */
         messageLoss  = flag.Int("messageloss", 0, "Use to simulate percent message loss. e.g. --messageloss=10 implies 10% dropped messages.")
@@ -121,9 +122,7 @@ func main() {
         createGossipSocket()
         /* Must wait for UDPServer to be ready. */
         ready := <-seerReady
-        if ready {
-                HowAmINotMyself(udpAddress, udpAddress)
-        } else {
+        if !ready {
                 fmt.Println("UDPServer NOT READY!")
                 os.Exit(1)
         }
@@ -132,12 +131,18 @@ func main() {
                 BootStrap(*bootstrap, tcpAddress)
         }
 
+        HowAmINotMyself()
+
         /* Run background cleanup on 10 second cycle. */
         //BackgroundLoop("Janitorial Work", 10, TombstoneReaper, AntiEntropy)
 
         /* Run background routine for GossipOps() */
         //BackgroundLoop("Gossip Oplog", 1, GossipOps)
 
+        if *raiseTheDead {
+                /* If bootstrapping, might want to wait for seed before doing this. */
+                RaiseServicesFromTheDead(udpAddress)
+        }
         for {
                 select {
                 case <-logCounter:
@@ -210,7 +215,7 @@ func TombstoneServices(seerAddress string) {
         for _, service := range myServices {
                 gossip := RemoveSeerPath(UpdateTS(service))
                 gossip = fmt.Sprintf(`%s,"Tombstone":true}`, gossip[:len(gossip)-1])
-                GossipGossip(gossip)
+                ProcessGossip(gossip, *hostIP, *hostIP)
         }
 }
 
@@ -218,13 +223,13 @@ func RaiseServicesFromTheDead(seerAddress string) {
         myServices := getServiceDataArray(seerAddress, "seer")
         for _, service := range myServices {
                 gossip := RemoveTombstone(RemoveSeerPath(UpdateTS(service)))
-                GossipGossip(gossip)
+                ProcessGossip(gossip, *hostIP, *hostIP)
         }
 }
 
-func HowAmINotMyself(seerAddr string, gossipee string) {
-        gossip := fmt.Sprintf(`{"SeerAddr":"%s"}`, seerAddr)
-        SendGossip(gossip, gossipee)
+func HowAmINotMyself() {
+        gossip := fmt.Sprintf(`{"SeerAddr":"%s","TS":%d}`, udpAddress, time.Now().Unix())
+        ProcessGossip(gossip, *hostIP, *hostIP)
 }
 
 func BootStrap(seeder string, seedee string) {
@@ -240,7 +245,7 @@ func BootStrap(seeder string, seedee string) {
         message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, seedee)
         SendGossip(message, seeder)
         /* Trickling self into SeerPeers if single bootstrap host, else this will be big broadcast to default SeerPort. */
-        HowAmINotMyself(udpAddress, seeder)
+        //HowAmINotMyself(udpAddress, seeder)
 }
 
 func FreshGossip(filePath string, newTS int64) (bool, string) {
@@ -465,7 +470,7 @@ func PutGossip(gossip string, decodedGossip Gossip) (bool, string) {
         }
         fresh, currentGossip := FreshGossip(SeerServiceDir+"/"+decodedGossip.ServiceName+"/"+decodedGossip.SeerAddr, decodedGossip.TS)
         if !fresh {
-                fmt.Printf("[Old Assed Gossip] I ain't writing that.\n")
+                fmt.Printf("[Old Assed Gossip] I ain't writing that.\n[Gossip]: %s", gossip)
                 return false, currentGossip
         }
         err := LazyWriteFile(SeerServiceDir+"/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, []byte(gossip))
