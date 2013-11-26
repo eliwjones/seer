@@ -55,7 +55,9 @@ var (
         gossipCount    int
 
         /* Defined variables go here. */
+        neighborhood    = -1
         commandList     = map[string]bool{"exit": true, "get": true}
+        whitelist       = map[string]bool{}
         tsRegexp        = regexp.MustCompile(`(,?\s*)("TS"\s*:\s*)(\d+)(\s*[,|}])`)
         seerPathRegexp  = regexp.MustCompile(`(,?\s*)("SeerPath"\s*:\s*\[)(.+?)(\]\s*,?)`)
         tombstoneRegexp = regexp.MustCompile(`(,?\s*)("Tombstone"\s*:\s*)(true)(\s*,?)`)
@@ -69,9 +71,11 @@ var (
         raiseTheDead    = flag.Bool("raisethedead", false, "Will gossip out that all previously Tombstone-d services are now up.")
 
         /* Testing Flags */
-        messageLoss  = flag.Int("messageloss", 0, "Use to simulate percent message loss. e.g. --messageloss=10 implies 10% dropped messages.")
-        messageDelay = flag.Int("messagedelay", 0, "Use to simulate millisecond delay in communication between Seers. e.g. --messagedelay=100 waits 100ms before sending.")
-        logCounts    = flag.Bool("logcounts", false, "Bool flag for locally logging number of SendGossip calls.  Can then aggregate total messages sent.  e.g. --logcounts=true")
+        messageLoss   = flag.Int("messageloss", 0, "Use to simulate percent message loss. e.g. --messageloss=10 implies 10% dropped messages.")
+        messageDelay  = flag.Int("messagedelay", 0, "Use to simulate millisecond delay in communication between Seers. e.g. --messagedelay=100 waits 100ms before sending.")
+        logCounts     = flag.Bool("logcounts", false, "Bool flag for locally logging number of SendGossip calls.  Can then aggregate total messages sent.  e.g. --logcounts=true")
+        neighborhoods = flag.Int("neighborhoods", -1, "For defining number of neighborhoods. If --neighborhoods=3, for Seer hostIPs = X.Y.Z.W,  W%3 defines which neighborhood a Seer belongs to.")
+        whitelistFlag = flag.String("whitelist", "", "Comma delimited list of whitelisted Seer hostIPs.  Thus, seer can communicate with whitelisted host even if it is not in its neighborhood.")
 )
 
 func init() {
@@ -79,16 +83,35 @@ func init() {
         runtime.GOMAXPROCS(int(runtime.NumCPU() / 2))
         flag.Parse()
 
+        if *hostIP == "" {
+                fmt.Printf("Please pass -ip=W.X.Y.Z\n")
+                os.Exit(1)
+        }
+
+        ipParts := strings.Split(*hostIP, ".")
+        if len(ipParts) != 4 {
+                fmt.Printf("Please pass -ip=W.X.Y.Z\nI received: %v\n", ipParts)
+                os.Exit(1)
+        }
+        if *neighborhoods > -1 {
+                var err error
+                neighborhood, _, err = GetNeighborhoodAndSeerIP(*hostIP, *neighborhoods)
+                if err != nil {
+                        fmt.Printf("[GetNeighborhood] Error: %v\nNeighborhood: %v\n", err, neighborhood)
+                        os.Exit(1)
+                }
+                fmt.Printf("NEIGHBORHOOD: %v\n", neighborhood)
+        }
+
+        for _, whitelistIP := range strings.Split(*whitelistFlag, ",") {
+                whitelist[whitelistIP] = true
+        }
+
         if *logCounts {
                 logCounter = make(chan bool, 100)
         }
         gossipCount = 0
         seerReady = make(chan bool, 1)
-
-        if *hostIP == "" {
-                fmt.Printf("Please pass -ip=W.X.Y.Z\n")
-                os.Exit(1)
-        }
 
         udpAddress = *hostIP + ":" + *udpPort
         tcpAddress = *hostIP + ":" + *tcpPort
@@ -384,9 +407,34 @@ func GetSeerPeers(filters ...string) []string {
         }
         seerPeers = make([]string, 0, len(seerMap))
         for seerPeer, _ := range seerMap {
-                seerPeers = append(seerPeers, seerPeer)
+                peer := true
+                /* Check neighborhood and whitelist */
+                if neighborhood > -1 {
+                        nhbd, seerIP, _ := GetNeighborhoodAndSeerIP(seerPeer, *neighborhoods)
+                        if nhbd != neighborhood {
+                                peer = false
+                        }
+                        /* Guess could be point in future where whitelist will need to exist outside Neighborhood check. */
+                        if whitelist[seerIP] {
+                                peer = true
+                        }
+                }
+                if peer {
+                        seerPeers = append(seerPeers, seerPeer)
+                }
         }
         return seerPeers
+}
+
+func GetNeighborhoodAndSeerIP(seerIP string, nhbds int) (int, string, error) {
+        portIndex := strings.Index(seerIP, ":")
+        if portIndex > -1 {
+                seerIP = seerIP[:portIndex]
+        }
+        ipParts := strings.Split(seerIP, ".")
+        nbhdPart, err := strconv.ParseInt(ipParts[3], 10, 0)
+        nhbd := int(nbhdPart) % nhbds
+        return nhbd, seerIP, err
 }
 
 func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
