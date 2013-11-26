@@ -129,6 +129,8 @@ func main() {
 
         if *bootstrap != "" {
                 BootStrap(*bootstrap, tcpAddress)
+                ready = <- seerReady
+                fmt.Printf("[Bootstrap] Received seerReady: %v\n", ready)
         }
 
         HowAmINotMyself()
@@ -197,7 +199,7 @@ func SendGossip(gossip string, seerAddr string) {
                 newTs := fmt.Sprintf(`,"TS":%d}`, time.Now().Unix())
                 gossip = gossip[:len(gossip)-1] + newTs
         }
-        seerPath, err := ExtractSeerPathFromJSON(gossip)
+        seerPath, err := ExtractSeerPathFromJSON(gossip, false)
         if err != nil && err.Error() == "no SeerPath" {
                 seerPath = fmt.Sprintf(`,"SeerPath":["%s"]}`, udpAddress)
                 gossip = gossip[:len(gossip)-1] + seerPath
@@ -261,9 +263,12 @@ func FreshGossip(filePath string, newTS int64) (bool, string) {
         return newTS > currentTS, string(serviceData)
 }
 
-func ExtractSeerPathFromJSON(gossip string) (string, error) {
+func ExtractSeerPathFromJSON(gossip string, trimquotes bool) (string, error) {
         seerPath := seerPathRegexp.FindStringSubmatch(gossip)
         if len(seerPath) == 5 {
+                if trimquotes {
+                        seerPath[3] = strings.Replace(seerPath[3], `"`, ``, -1)
+                }
                 return seerPath[3], nil
         }
         return "", errors.New("no SeerPath")
@@ -336,14 +341,14 @@ func ChooseNFromMNonDeterministically(n int, m int) []int {
 
 func GossipGossip(gossip string) {
         fmt.Printf("[GossipGossip] Gossiping Gossip: %s\n", gossip)
-        seerPath, _ := ExtractSeerPathFromJSON(gossip)
+        seerPath, _ := ExtractSeerPathFromJSON(gossip, true)
         seerPeers := GetSeerPeers(seerPath)
         if len(seerPeers) == 0 {
                 fmt.Println("[GossipGossip] No peers! No one to gossip with.")
                 return
         }
         gossipees := int(math.Log2(float64(len(seerPeers)))) + 1
-        fmt.Printf("GOssipees: %d\nSeerPeers: %v\n", gossipees, seerPeers)
+        fmt.Printf("Gossipees: %d\nSeerPeers: %v\n", gossipees, seerPeers)
         randIndices := ChooseNFromM(gossipees, len(seerPeers))
         for _, randIndex := range randIndices {
                 SendGossip(gossip, seerPeers[randIndex])
@@ -747,6 +752,8 @@ func processSeed(targzpath string) {
                         fmt.Printf("[processSeed] ERRR: %s", err)
                 }
         }
+        /* Suppose might want a seedReceived channel. */
+        seerReady <- true
         return
 }
 
