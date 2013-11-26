@@ -129,10 +129,15 @@ func main() {
 
         if *bootstrap != "" {
                 BootStrap(*bootstrap, tcpAddress)
-                ready = <- seerReady
-                fmt.Printf("[Bootstrap] Received seerReady: %v\n", ready)
+                ready = <-seerReady
+                fmt.Printf("[Bootstrap] Received seerReady from processSeed(): %v\n", ready)
+                if !ready {
+                        fmt.Println("How am I not ready?")
+                        os.Exit(1)
+                }
         }
 
+        /* Presumably should be in working state with full set of peers.  So, announce. */
         HowAmINotMyself()
 
         /* Run background cleanup on 10 second cycle. */
@@ -215,7 +220,7 @@ func TombstoneServices(seerAddress string) {
         /* For all my services, Gossip out Tombstones. */
         myServices := getServiceDataArray(seerAddress, "seer")
         for _, service := range myServices {
-                gossip := RemoveSeerPath(UpdateTS(service))
+                gossip := RemoveTombstone(RemoveSeerPath(UpdateTS(service)))
                 gossip = fmt.Sprintf(`%s,"Tombstone":true}`, gossip[:len(gossip)-1])
                 ProcessGossip(gossip, *hostIP, *hostIP)
         }
@@ -231,6 +236,7 @@ func RaiseServicesFromTheDead(seerAddress string) {
 
 func HowAmINotMyself() {
         gossip := fmt.Sprintf(`{"SeerAddr":"%s","TS":%d}`, udpAddress, time.Now().Unix())
+        /* Gossip self to self which will then get GossipGossip-ed. */
         ProcessGossip(gossip, *hostIP, *hostIP)
 }
 
@@ -246,8 +252,6 @@ func BootStrap(seeder string, seedee string) {
         }
         message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, seedee)
         SendGossip(message, seeder)
-        /* Trickling self into SeerPeers if single bootstrap host, else this will be big broadcast to default SeerPort. */
-        //HowAmINotMyself(udpAddress, seeder)
 }
 
 func FreshGossip(filePath string, newTS int64) (bool, string) {
