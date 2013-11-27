@@ -51,12 +51,14 @@ var (
         lastSeedTS     int64
         wg             sync.WaitGroup
         seerReady      chan bool
+        gossipReceived chan string
         logCounter     chan bool
         gossipCount    int
 
         /* Defined variables go here. */
         neighborhood    = -1
         commandList     = map[string]bool{"exit": true, "get": true}
+        seerNearness    = map[string]int{}
         whitelist       = map[string]bool{}
         tsRegexp        = regexp.MustCompile(`(,?\s*)("TS"\s*:\s*)(\d+)(\s*[,|}])`)
         seerPathRegexp  = regexp.MustCompile(`(,?\s*)("SeerPath"\s*:\s*\[)(.+?)(\]\s*,?)`)
@@ -112,6 +114,7 @@ func init() {
         }
         gossipCount = 0
         seerReady = make(chan bool, 1)
+        gossipReceived = make(chan string, 100)
 
         udpAddress = *hostIP + ":" + *udpPort
         tcpAddress = *hostIP + ":" + *tcpPort
@@ -134,6 +137,7 @@ func main() {
         //TombstoneReaper()
         //AntiEntropy()
 
+        go UpdateSeerConnectivity()
         go UDPServer(*hostIP, *udpPort)
         go ServiceServer(tcpAddress)
 
@@ -302,7 +306,7 @@ func ExtractSeerPathFromJSON(gossip string, trimquotes bool) (string, error) {
 }
 
 func UpdateSeerPath(gossip string) string {
-        return seerPathRegexp.ReplaceAllString(gossip, `${1}${2}${3},"`+udpAddress+`"${4}`)
+        return seerPathRegexp.ReplaceAllString(gossip, `${1}${2}"`+udpAddress+`",${3}${4}`)
 }
 
 func RemoveSeerPath(gossip string) string {
@@ -426,6 +430,25 @@ func GetSeerPeers(filters ...string) []string {
         return seerPeers
 }
 
+func UpdateSeerConnectivity() {
+        for {
+                select {
+                case gossip := <-gossipReceived:
+                        seerPeers, _ := ExtractSeerPathFromJSON(gossip, true)
+                        for index, seerPeer := range strings.Split(seerPeers, ",") {
+                                if index > 1 || seerPeer == "" {
+                                        continue
+                                } else if index == 0 {
+                                        seerNearness[seerPeer] += 1
+                                } else if index == 1 {
+                                        seerNearness[seerPeer] -= 1
+                                }
+                        }
+                        fmt.Printf("[UpdateSeerConnectivity] seerNearness: %#v\n", seerNearness)
+                }
+        }
+}
+
 func GetNeighborhoodAndSeerIP(seerIP string, nhbds int) (int, string, error) {
         portIndex := strings.Index(seerIP, ":")
         if portIndex > -1 {
@@ -484,6 +507,8 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
         /* Save it. */
         put, fresherGossip := PutGossip(gossip, decodedGossip)
 
+        gossipReceived <- gossip
+
         /* put == true implies gossip was "fresh".  Thus, spread the good news. */
         if put {
                 /* Spread the word? Or, use GossipOps()? */
@@ -527,7 +552,7 @@ func PutGossip(gossip string, decodedGossip Gossip) (bool, string) {
         }
         fresh, currentGossip := FreshGossip(SeerServiceDir+"/"+decodedGossip.ServiceName+"/"+decodedGossip.SeerAddr, decodedGossip.TS)
         if !fresh {
-                fmt.Printf("[Old Assed Gossip] I ain't writing that.\n[Gossip]: %s", gossip)
+                fmt.Printf("[Old Assed Gossip] I ain't writing that.\n[Gossip]: %s\n", gossip)
                 return false, currentGossip
         }
         err := LazyWriteFile(SeerServiceDir+"/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, []byte(gossip))
