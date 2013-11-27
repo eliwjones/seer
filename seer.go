@@ -137,7 +137,7 @@ func main() {
         //TombstoneReaper()
         //AntiEntropy()
 
-        go UpdateSeerConnectivity()
+        go UpdateSeerNearness()
         go UDPServer(*hostIP, *udpPort)
         go ServiceServer(tcpAddress)
 
@@ -335,9 +335,10 @@ func UpdateTS(gossip string) string {
         return tsRegexp.ReplaceAllString(gossip, `${1}${2}`+newTS+`${4}`)
 }
 
-func ChooseNFromM(n int, m int) []int {
+func ChooseNFromArray(n int, array []string) []string {
+        m := len(array)
         if m > 4*n {
-                return ChooseNFromMNonDeterministically(n, m)
+                return ChooseNFromArrayNonDeterministically(n, array)
         }
         indexArray := make([]int, m)
         for i := 0; i < m; i++ {
@@ -352,22 +353,45 @@ func ChooseNFromM(n int, m int) []int {
                 j := rand.Intn(i + 1)
                 intSlice.Swap(i, j)
         }
-        return intSlice[:n]
-}
-
-func ChooseNFromMNonDeterministically(n int, m int) []int {
-        intSlice := make([]int, n)
-        tracker := map[int]bool{}
-        index := 0
-        for index < n {
-                intSlice[index] = rand.Intn(m)
-                if tracker[intSlice[index]] {
+        tracker := map[string]bool{}
+        counter := 0
+        chosenItems := make([]string, 0, n)
+        for _, arrayIndex := range intSlice {
+                item := array[arrayIndex]
+                if tracker[item] {
                         continue
                 }
-                tracker[intSlice[index]] = true
-                index += 1
+                chosenItems = append(chosenItems, item)
+                tracker[item] = true
+                counter += 1
+                if counter == n {
+                        break
+                }
         }
-        return intSlice
+        return chosenItems
+}
+
+func ChooseNFromArrayNonDeterministically(n int, array []string) []string {
+        chosenItems := make([]string, 0, n)
+        tracker := map[string]bool{}
+        counter := 0
+        tries := 0
+        m := len(array)
+        for counter < n {
+                tries += 1
+                if tries > MaxInt(m, 4*n) {
+                        /* Do not wish to try forever. */
+                        break
+                }
+                item := array[rand.Intn(m)]
+                if tracker[item] {
+                        continue
+                }
+                chosenItems = append(chosenItems, item)
+                tracker[item] = true
+                counter += 1
+        }
+        return chosenItems
 }
 
 func GossipGossip(gossip string) {
@@ -380,9 +404,15 @@ func GossipGossip(gossip string) {
         }
         gossipees := int(math.Log2(float64(len(seerPeers)))) + 1
         fmt.Printf("Gossipees: %d\nSeerPeers: %v\n", gossipees, seerPeers)
-        randIndices := ChooseNFromM(gossipees, len(seerPeers))
-        for _, randIndex := range randIndices {
-                SendGossip(gossip, seerPeers[randIndex])
+
+        /*
+           Normalizing by nearness.  Increases the probability that Seer Peer will try to message a "Hub" that it is "touching".
+           And, decreases probability that Seer Peer will try to message a peer in another neighborhood.
+        */
+        normalizedSeerPeers := NormalizeSeerPeersByNearness(seerPeers)
+        randSeerPeers := ChooseNFromArray(gossipees, normalizedSeerPeers)
+        for _, seerPeer := range randSeerPeers {
+                SendGossip(gossip, seerPeer)
         }
 }
 
@@ -430,7 +460,25 @@ func GetSeerPeers(filters ...string) []string {
         return seerPeers
 }
 
-func UpdateSeerConnectivity() {
+func NormalizeSeerPeersByNearness(seerPeers []string) []string {
+        /* Most likely plenty of more-optimal approaches, but this feels most immediately clear. */
+        minval := 0
+        for _, seerPeer := range seerPeers {
+                minval = MinInt(minval, seerNearness[seerPeer])
+        }
+        normalizedPeers := make([]string, 0, len(seerPeers))
+        for _, seerPeer := range seerPeers {
+                indexMultiplier := 1 + AbsInt(minval) + seerNearness[seerPeer]
+                /* "Least Near" peer will only have its index appear once. */
+                for i := 0; i < indexMultiplier; i++ {
+                        normalizedPeers = append(normalizedPeers, seerPeer)
+                }
+        }
+        return normalizedPeers
+
+}
+
+func UpdateSeerNearness() {
         for {
                 select {
                 case gossip := <-gossipReceived:
@@ -867,4 +915,29 @@ func TombstoneReaper() {
            3. Remove remaining docs if they are Tombstoned and older than certain time.
         */
         fmt.Printf("[TombstoneReaper] I remove stuff that has been deleted or older timestamped source docs.\n")
+}
+
+/*******************************************************************************
+    Silly helper functions.
+*******************************************************************************/
+
+func AbsInt(x int) int {
+        if x < 0 {
+                return -1 * x
+        }
+        return x
+}
+
+func MinInt(x int, y int) int {
+        if x < y {
+                return x
+        }
+        return y
+}
+
+func MaxInt(x int, y int) int {
+        if x > y {
+                return x
+        }
+        return y
 }
