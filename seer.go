@@ -37,6 +37,8 @@ type Gossip struct {
         SeerPath    []string
         Tombstone   bool
         TS          int64
+
+        ReGossip bool
 }
 
 var (
@@ -237,7 +239,7 @@ func SendGossip(gossip string, seerAddr string) {
                 gossip = gossip[:len(gossip)-1] + seerPath
         } else if strings.LastIndex(seerPath, udpAddress) == -1 {
                 /* Do not want to add myself to myself. */
-                gossip = UpdateSeerPath(gossip)
+                gossip = UpdateSeerPath(gossip, `"`+udpAddress+`"`)
         }
         fmt.Printf("[SendGossip] gossip: %s\n    TO: %s\n", gossip, seer)
         gossipSocket.WriteToUDP([]byte(gossip), seer)
@@ -305,8 +307,11 @@ func ExtractSeerPathFromJSON(gossip string, trimquotes bool) (string, error) {
         return "", errors.New("no SeerPath")
 }
 
-func UpdateSeerPath(gossip string) string {
-        return seerPathRegexp.ReplaceAllString(gossip, `${1}${2}"`+udpAddress+`",${3}${4}`)
+func UpdateSeerPath(gossip string, newpathitems string) string {
+        if newpathitems != "" {
+                gossip = seerPathRegexp.ReplaceAllString(gossip, `${1}${2}`+newpathitems+`,${3}${4}`)
+        }
+        return gossip
 }
 
 func RemoveSeerPath(gossip string) string {
@@ -561,8 +566,12 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
         if put {
                 /* Spread the word? Or, use GossipOps()? */
                 GossipGossip(gossip)
-        } else if fresherGossip != "" {
-                /* Merge SeerPaths and re-gossip?  Annotate if already a re-gossip? */
+        } else if fresherGossip != "" && !strings.Contains(gossip, `"ReGossip":true`) {
+                /* Merge SeerPaths and re-gossip. */
+                gossip = gossip[:len(gossip)-1] + `,"ReGossip":true}`
+                seerPath, _ := ExtractSeerPathFromJSON(fresherGossip, false)
+                gossip = UpdateSeerPath(gossip, seerPath)
+                GossipGossip(gossip)
         }
 }
 
