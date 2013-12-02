@@ -38,24 +38,26 @@ type Gossip struct {
         Tombstone   bool
         TS          int64
 
+        Metadata string
         ReGossip bool
 }
 
 var (
-        SeerRoot       string
-        SeerOpDir      string
-        SeerDataDir    string
-        SeerServiceDir string
-        SeerHostDir    string
-        udpAddress     string
-        tcpAddress     string
-        gossipSocket   *net.UDPConn
-        lastSeedTS     int64
-        wg             sync.WaitGroup
-        seerReady      chan bool
-        gossipReceived chan string
-        logCounter     chan bool
-        gossipCount    int
+        SeerRoot        string
+        SeerOpDir       string
+        SeerDataDir     string
+        SeerMetadataDir string
+        SeerServiceDir  string
+        SeerHostDir     string
+        udpAddress      string
+        tcpAddress      string
+        gossipSocket    *net.UDPConn
+        lastSeedTS      int64
+        wg              sync.WaitGroup
+        seerReady       chan bool
+        gossipReceived  chan string
+        logCounter      chan bool
+        gossipCount     int
 
         /* Defined variables go here. */
         neighborhood    = -1
@@ -125,6 +127,7 @@ func init() {
         SeerRoot = "seer/" + udpAddress
         SeerOpDir = SeerRoot + "/gossip/oplog"
         SeerDataDir = SeerRoot + "/gossip/data"
+        SeerMetadataDir = SeerRoot + "/gossip/metadata"
         SeerServiceDir = SeerDataDir + "/service"
         SeerHostDir = SeerDataDir + "/host"
         os.MkdirAll(SeerOpDir, 0777)
@@ -503,6 +506,39 @@ func GetNeighborhoodAndSeerIP(seerIP string, nhbds int) (int, string, error) {
         return nhbd, seerIP, err
 }
 
+func ProcessSeerRequest(decodedGossip Gossip, destinationIp string) {
+        if decodedGossip.SeerRequest == "SeedMe" && strings.HasPrefix(destinationIp, "255.") {
+                /* If receive broadcast, send back "SeedYou" query. */
+                if udpAddress == decodedGossip.SeerAddr {
+                        /* No need to seed oneself. */
+                        /* Might be sexier to have SendGossip() block gossip to self? */
+                        return
+                }
+                message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedYou"}`, udpAddress)
+                SendGossip(message, decodedGossip.SeerAddr)
+        } else if decodedGossip.SeerRequest == "SeedMe" {
+                /* Received direct "SeedMe" request.  Send seed. */
+                sendSeed(decodedGossip.SeerAddr)
+        } else if decodedGossip.SeerRequest == "SeedYou" {
+                /* Seer thinks I want a Seed.. do I? */
+                if time.Now().UnixNano() >= lastSeedTS+1000000000*30 {
+                        fmt.Printf("[SeedYou] Requesting Seed!\n  NOW - THEN = %s", time.Now().UnixNano()-lastSeedTS)
+                        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, tcpAddress)
+                        SendGossip(message, decodedGossip.SeerAddr)
+                } else {
+                        fmt.Printf("[SeedYou] No need to seed!\n  NOW - THEN = %s", time.Now().UnixNano()-lastSeedTS)
+                }
+        } else if decodedGossip.SeerRequest == "RequestMetadata" {
+                /* For all peers, send {"SeerAddr":udpAddress,"SeerRequest":"Metadata"} */
+                requestMetadata()
+        } else if decodedGossip.SeerRequest == "Metadata" {
+                metadata := generateMetadata()
+                message := fmt.Sprintf(`{"SeerAddr":"%s","ServiceName":"Seer","Metadata":"%s"}`, udpAddress, metadata)
+                SendGossip(message, decodedGossip.SeerAddr)
+        }
+        return
+}
+
 func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
         /* Implement simulated Message Loss and Delays here. */
         if *messageLoss > 0 && rand.Intn(100) < *messageLoss {
@@ -519,30 +555,9 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
                 logCounter <- true
         }
         decodedGossip, err := VerifyGossip(gossip)
-        /* Handle any broadcasted commands first, since basic gossip is not allowed to be broadcast. */
-        if decodedGossip.SeerRequest == "SeedMe" && strings.HasPrefix(destinationIp, "255.") {
-                /* If receive broadcast, send back "SeedYou" query. */
-                if udpAddress == decodedGossip.SeerAddr {
-                        /* No need to seed oneself. */
-                        /* Might be sexier to have SendGossip() block gossip to self? */
-                        return
-                }
-                message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedYou"}`, udpAddress)
-                SendGossip(message, decodedGossip.SeerAddr)
-                return
-        } else if decodedGossip.SeerRequest == "SeedMe" {
-                /* Received direct "SeedMe" request.  Send seed. */
-                sendSeed(decodedGossip.SeerAddr)
-                return
-        } else if decodedGossip.SeerRequest == "SeedYou" {
-                /* Seer thinks I want a Seed.. do I? */
-                if time.Now().UnixNano() >= lastSeedTS+1000000000*30 {
-                        fmt.Printf("[SeedYou] Requesting Seed!\n  NOW - THEN = %s", time.Now().UnixNano()-lastSeedTS)
-                        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, tcpAddress)
-                        SendGossip(message, decodedGossip.SeerAddr)
-                } else {
-                        fmt.Printf("[SeedYou] No need to seed!\n  NOW - THEN = %s", time.Now().UnixNano()-lastSeedTS)
-                }
+
+        if decodedGossip.SeerRequest != "" {
+                ProcessSeerRequest(decodedGossip, destinationIp)
                 return
         }
         if err != nil || decodedGossip.SeerAddr == "" {
@@ -551,11 +566,7 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
         }
         /* Write to oplog. opName limits updates from single host to 10 per nanosecond.. */
         opName := fmt.Sprintf("%d_%s_%d", time.Now().UnixNano(), decodedGossip.SeerAddr, (rand.Int()%10)+10)
-        err = LazyWriteFile(SeerOpDir, opName+".op", []byte(gossip))
-        if err != nil {
-                /* Not sure want to panic here.  Move forward at all costs? */
-                panic(err)
-        }
+        _ = LazyWriteFile(SeerOpDir, opName+".op", []byte(gossip))
         /* Save it. */
         put, fresherGossip := PutGossip(gossip, decodedGossip)
 
@@ -599,6 +610,14 @@ func VerifyGossip(gossip string) (Gossip, error) {
         return g, err
 }
 
+func PutMetadata(gossip string, decodedGossip Gossip) (bool, string) {
+        /* Just accepting host metadata.. no granularity for services yet. */
+        /* Would prefer less overwrought directory variables.. so trying that out here..  */
+        _ = LazyWriteFile(SeerMetadataDir+"/"+"host"+"/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, []byte(gossip))
+        /* For now, do not wish to re-gossip metadata.  Just accept it? */
+        return false, ""
+}
+
 func PutGossip(gossip string, decodedGossip Gossip) (bool, string) {
         /* Only checking SeerServiceDir for current TS. */
         /* Current code has odd side effect of allowing Seer data to exist for host even if we missed initial Seer HELO gossip. */
@@ -606,19 +625,17 @@ func PutGossip(gossip string, decodedGossip Gossip) (bool, string) {
         if decodedGossip.ServiceName == "" {
                 decodedGossip.ServiceName = "Seer"
         }
+        if decodedGossip.Metadata != "" {
+                /* Metadata goes in /gossip/metadata/ */
+                return PutMetadata(gossip, decodedGossip)
+        }
         fresh, currentGossip := FreshGossip(SeerServiceDir+"/"+decodedGossip.ServiceName+"/"+decodedGossip.SeerAddr, decodedGossip.TS)
         if !fresh {
                 fmt.Printf("[Old Assed Gossip] I ain't writing that.\n[Gossip]: %s\n", gossip)
                 return false, currentGossip
         }
-        err := LazyWriteFile(SeerServiceDir+"/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, []byte(gossip))
-        if err != nil {
-                fmt.Printf("Could not PutGossip to: [%s]! Error:\n%s", SeerServiceDir+"/"+decodedGossip.ServiceName, err)
-        }
-        err = LazyWriteFile(SeerHostDir+"/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, []byte(gossip))
-        if err != nil {
-                fmt.Printf("Could not PutGossip to: [%s]! Error:\n%s", SeerHostDir+"/"+decodedGossip.SeerAddr, err)
-        }
+        _ = LazyWriteFile(SeerServiceDir+"/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, []byte(gossip))
+        _ = LazyWriteFile(SeerHostDir+"/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, []byte(gossip))
         return true, ""
 }
 
@@ -627,6 +644,9 @@ func LazyWriteFile(folderName string, fileName string, data []byte) error {
         if err != nil {
                 os.MkdirAll(folderName, 0777)
                 err = ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
+        }
+        if err != nil {
+                fmt.Printf("[LazyWriteFile] Could not WriteFile: %s\nErr: %s\n", folderName+"/"+fileName, err)
         }
         return err
 }
@@ -709,9 +729,11 @@ func errorResponse(w http.ResponseWriter, message string) {
 
 func ServiceHandler(w http.ResponseWriter, r *http.Request) {
         requestTypeMap := map[string]string{
-                "host":    "seer",
-                "seer":    "seer",
-                "service": "service",
+                "host":             "seer",
+                "seer":             "seer",
+                "service":          "service",
+                "metadata":         "metadata",
+                "generateMetadata": "generateMetadata",
         }
         /* Allow GET by 'service' or 'seeraddr' */
         splitURL := strings.Split(r.URL.Path, "/")
@@ -719,10 +741,15 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
         switch r.Method {
         case "GET":
                 if requestTypeMap[splitURL[1]] == "" {
-                        errorResponse(w, "Please query for 'seer' or 'service'")
+                        errorResponse(w, "Please query for 'seer', 'service', 'metadata', or 'op'")
                         return
                 }
-                jsonPayload := getServiceData(splitURL[2], requestTypeMap[splitURL[1]])
+                jsonPayload := ""
+                if splitURL[1] == "generateMetadata" {
+                        jsonPayload = generateMetadata()
+                } else {
+                        jsonPayload = getServiceData(splitURL[2], requestTypeMap[splitURL[1]])
+                }
                 fmt.Fprintf(w, jsonPayload)
         case "PUT":
                 if splitURL[1] != "seed" {
@@ -751,6 +778,12 @@ func getGossipArray(name string, requestType string) ([]string, []time.Time) {
                 servicePath = SeerServiceDir + "/" + name
         } else if requestType == "seer" {
                 servicePath = SeerHostDir + "/" + name
+        } else if requestType == "metadata" {
+                /*
+                   Can be used to get metadata for specific host.
+                   Still need to aggregate metadata across hosts for report.
+                */
+                servicePath = SeerMetadataDir + "/host/" + name
         } else if requestType == "op" {
                 servicePath = SeerOpDir
         }
@@ -938,13 +971,43 @@ func TombstoneReaper() {
     Metadata calculation
 *******************************************************************************/
 
-func getStats(int64Array []int64) (int64, int64, int64, int64) {
+type Metadata struct {
+        TS          []int64
+        TSLag       []int64
+        MessageData int
+        PeerData    int
+}
+
+func requestMetadata() {
+        /* For all peers, send {"SeerAddr":udpAddress,"SeerRequest":"Metadata"} */
+        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"Metadata"}`, udpAddress)
+        seerPeers := GetSeerPeers(udpAddress)
+        for _, peer := range seerPeers {
+                SendGossip(message, peer)
+        }
+}
+
+func generateMetadata() string {
+        var metadata Metadata
+        metadata.TS = getStats(getSortedTSArray(udpAddress))
+        metadata.TSLag = getStats(getSortedTSLagArray(udpAddress))
+        metadata.MessageData = gossipCount
+        metadata.PeerData = len(GetSeerPeers(udpAddress))
+
+        json, err := json.Marshal(metadata)
+        if err != nil {
+                return ""
+        }
+        return strings.Replace(string(json), `"`, `'`, -1)
+}
+
+func getStats(int64Array []int64) []int64 {
         if len(int64Array) == 0 {
-                return 0, 0, 0, 0
+                return []int64{0, 0, 0, 0}
         }
         /* Return min, median, 99th percentile, max */
         ninetiethPercentileIdx := (len(int64Array) * 9) / 10
-        return int64Array[0], Median(int64Array), int64Array[ninetiethPercentileIdx], int64Array[len(int64Array)-1]
+        return []int64{int64Array[0], Median(int64Array), int64Array[ninetiethPercentileIdx], int64Array[len(int64Array)-1]}
 }
 
 func getSortedTSArray(excludeHost string) []int64 {
@@ -964,8 +1027,8 @@ func getSortedTSArray(excludeHost string) []int64 {
         return tsArray
 }
 
-func getSortedTSLagArray() []int64 {
-        seerPeers := GetSeerPeers("")
+func getSortedTSLagArray(excludeHost string) []int64 {
+        seerPeers := GetSeerPeers(excludeHost)
         lagArray := make([]int64, 0, len(seerPeers))
         for _, peer := range seerPeers {
                 gossips, modTimes := getGossipArray(peer, "seer")
