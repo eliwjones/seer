@@ -208,21 +208,6 @@ func createGossipSocket() {
 }
 
 func SendGossip(gossip string, seerAddr string) {
-        /* Implement simulated Message Loss and Delays here. */
-        if *messageLoss > 0 && rand.Intn(100) < *messageLoss {
-                fmt.Printf("[SendGossip] Simulated message loss of %d%\n", *messageLoss)
-                return
-        }
-        if *messageDelay > 0 {
-                fmt.Printf("[SendGossip] messagedelay of %dms\n", *messageDelay)
-                time.Sleep(time.Duration(*messageDelay) * time.Millisecond)
-        }
-        /* Also, log gossip counts here?  Or at server? */
-        if *logCounts {
-                /* Inc some global counter? */
-                logCounter <- true
-        }
-
         seer, err := net.ResolveUDPAddr("udp4", seerAddr)
         if err != nil {
                 fmt.Printf("[SendGossip] ERR: %s\n", err)
@@ -230,7 +215,7 @@ func SendGossip(gossip string, seerAddr string) {
         }
         _, err = ExtractTSFromJSON(gossip)
         if err != nil && err.Error() == "no TS" {
-                newTs := fmt.Sprintf(`,"TS":%d}`, time.Now().Unix())
+                newTs := fmt.Sprintf(`,"TS":%d}`, MS(time.Now()))
                 gossip = gossip[:len(gossip)-1] + newTs
         }
         seerPath, err := ExtractSeerPathFromJSON(gossip, false)
@@ -247,7 +232,7 @@ func SendGossip(gossip string, seerAddr string) {
 
 func TombstoneServices(seerAddress string) {
         /* For all my services, Gossip out Tombstones. */
-        myServices := getServiceDataArray(seerAddress, "seer")
+        myServices, _ := getGossipArray(seerAddress, "seer")
         for _, service := range myServices {
                 gossip := RemoveTombstone(RemoveSeerPath(UpdateTS(service)))
                 gossip = fmt.Sprintf(`%s,"Tombstone":true}`, gossip[:len(gossip)-1])
@@ -256,7 +241,7 @@ func TombstoneServices(seerAddress string) {
 }
 
 func RaiseServicesFromTheDead(seerAddress string) {
-        myServices := getServiceDataArray(seerAddress, "seer")
+        myServices, _ := getGossipArray(seerAddress, "seer")
         for _, service := range myServices {
                 gossip := RemoveTombstone(RemoveSeerPath(UpdateTS(service)))
                 ProcessGossip(gossip, *hostIP, *hostIP)
@@ -264,7 +249,7 @@ func RaiseServicesFromTheDead(seerAddress string) {
 }
 
 func HowAmINotMyself() {
-        gossip := fmt.Sprintf(`{"SeerAddr":"%s","TS":%d}`, udpAddress, time.Now().Unix())
+        gossip := fmt.Sprintf(`{"SeerAddr":"%s","TS":%d}`, udpAddress, MS(time.Now()))
         /* Gossip self to self which will then get GossipGossip-ed. */
         ProcessGossip(gossip, *hostIP, *hostIP)
 }
@@ -336,7 +321,7 @@ func ExtractTSFromJSON(gossip string) (int64, error) {
 }
 
 func UpdateTS(gossip string) string {
-        newTS := fmt.Sprintf("%d", time.Now().Unix())
+        newTS := fmt.Sprintf("%d", MS(time.Now()))
         return tsRegexp.ReplaceAllString(gossip, `${1}${2}`+newTS+`${4}`)
 }
 
@@ -402,7 +387,7 @@ func ChooseNFromArrayNonDeterministically(n int, array []string) []string {
 func GossipGossip(gossip string) {
         fmt.Printf("[GossipGossip] Gossiping Gossip: %s\n", gossip)
         seerPath, _ := ExtractSeerPathFromJSON(gossip, true)
-        seerPeers := GetSeerPeers(seerPath)
+        seerPeers := GetSeerPeers(udpAddress, seerPath)
         if len(seerPeers) == 0 {
                 fmt.Println("[GossipGossip] No peers! No one to gossip with.")
                 return
@@ -413,6 +398,12 @@ func GossipGossip(gossip string) {
         /*
            Normalizing by nearness.  Increases the probability that Seer Peer will try to message a "Hub" that it is "touching".
            And, decreases probability that Seer Peer will try to message a peer in another neighborhood.
+
+           Highly likely this is useless being baked in.  Probably want vanilla random selection, and then handle special case of "Hub" peers.
+           Mainly, if the topology is broken out into sub-neighborhoods, what is the value of each neighborhood knowing about the other?
+           Presumably, the peers cannot see across the neighborhoods.. so.. why should they attempt to be aware of eachother's services?
+
+           More useful for a generalized key-value store.
         */
         normalizedSeerPeers := NormalizeSeerPeersByNearness(seerPeers)
         randSeerPeers := ChooseNFromArray(gossipees, normalizedSeerPeers)
@@ -438,7 +429,6 @@ func GetSeerPeers(filters ...string) []string {
         for _, seerPeer := range seerPeers {
                 seerMap[seerPeer] = true
         }
-        delete(seerMap, udpAddress)
         for _, filter := range filters {
                 for _, seerPeer := range strings.Split(filter, ",") {
                         delete(seerMap, seerPeer)
@@ -514,11 +504,20 @@ func GetNeighborhoodAndSeerIP(seerIP string, nhbds int) (int, string, error) {
 }
 
 func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
-        /*
-           1. Write Gossip to gossiplog.
-           2. Share gossip?
-        */
-
+        /* Implement simulated Message Loss and Delays here. */
+        if *messageLoss > 0 && rand.Intn(100) < *messageLoss {
+                fmt.Printf("[ProcessGossip] Simulated message loss of %d%\n", *messageLoss)
+                return
+        }
+        if *messageDelay > 0 {
+                fmt.Printf("[ProcessGossip] messagedelay of %dms\n", *messageDelay)
+                time.Sleep(time.Duration(*messageDelay) * time.Millisecond)
+        }
+        /* Also, log gossip counts here?  Or at server? */
+        if *logCounts {
+                /* Inc some global counter? */
+                logCounter <- true
+        }
         decodedGossip, err := VerifyGossip(gossip)
         /* Handle any broadcasted commands first, since basic gossip is not allowed to be broadcast. */
         if decodedGossip.SeerRequest == "SeedMe" && strings.HasPrefix(destinationIp, "255.") {
@@ -546,7 +545,7 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
                 }
                 return
         }
-        if err != nil || decodedGossip.SeerAddr == "" || (destinationIp != *hostIP && !strings.HasPrefix(destinationIp, "255.")) {
+        if err != nil || decodedGossip.SeerAddr == "" {
                 fmt.Printf("\nBad Gossip!: %s\nErr: %s\nDestination: %s\n", gossip, err, destinationIp)
                 return
         }
@@ -679,11 +678,15 @@ func UDPServer(ipAddress string, port string) {
                 if err != nil {
                         log.Fatal(err)
                 }
-                message := strings.Trim(string(udpBuff[:n]), "\n")
-                if message == "exit" {
-                        return
+                if cm.Dst.String() == *hostIP || strings.HasPrefix(cm.Dst.String(), "255.") {
+                        /* Only process broadcast traffic OR traffic destined for me. */
+                        /* Only necessary when listenbroadcast=true */
+                        message := strings.Trim(string(udpBuff[:n]), "\n")
+                        if message == "exit" {
+                                return
+                        }
+                        go ProcessGossip(message, cm.Src.String(), cm.Dst.String())
                 }
-                go ProcessGossip(message, cm.Src.String(), cm.Dst.String())
         }
 }
 
@@ -725,7 +728,7 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
                 if splitURL[1] != "seed" {
                         errorResponse(w, "I only accept PUTs for 'seed'")
                 }
-                path := fmt.Sprintf("/tmp/seer_received_seed_%s_%d.tar.gz", udpAddress, time.Now().Unix())
+                path := fmt.Sprintf("/tmp/seer_received_seed_%s_%d.tar.gz", udpAddress, MS(time.Now()))
                 file, err := os.Create(path)
                 if err != nil {
                         errorResponse(w, err.Error())
@@ -742,34 +745,39 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
         }
 }
 
-func getServiceDataArray(name string, requestType string) []string {
+func getGossipArray(name string, requestType string) ([]string, []time.Time) {
         var servicePath string
         if requestType == "service" {
                 servicePath = SeerServiceDir + "/" + name
         } else if requestType == "seer" {
                 servicePath = SeerHostDir + "/" + name
+        } else if requestType == "op" {
+                servicePath = SeerOpDir
         }
-        serviceHosts, _ := ioutil.ReadDir(servicePath)
+        gossipFiles, _ := ioutil.ReadDir(servicePath)
         /* read files from servicePath, append to jsonPayload. */
-        servicesArray := make([]string, 0, len(serviceHosts))
-        for _, serviceHost := range serviceHosts {
-                if serviceHost.IsDir() {
+        gossipArray := make([]string, 0, len(gossipFiles))
+        modTimeArray := make([]time.Time, 0, len(gossipFiles))
+        for _, gossipFile := range gossipFiles {
+                if gossipFile.IsDir() {
                         continue
                 }
-                serviceData, err := ioutil.ReadFile(servicePath + "/" + serviceHost.Name())
+                gossipData, err := ioutil.ReadFile(servicePath + "/" + gossipFile.Name())
                 if err == nil {
-                        servicesArray = append(servicesArray, string(serviceData))
+                        gossipArray = append(gossipArray, string(gossipData))
+                        modTimeArray = append(modTimeArray, gossipFile.ModTime())
                 } else {
-                        err := fmt.Sprintf("[getServiceData] ERROR: %s\nFILE: %s", err, serviceHost.Name())
+                        err := fmt.Sprintf("[getGossipArray] ERROR: %s\nFILE: %s", err, gossipFile.Name())
                         fmt.Println(err)
                 }
         }
-        return servicesArray
+        return gossipArray, modTimeArray
 }
 
 func getServiceData(name string, requestType string) string {
         /* Construct JSON Array.  */
-        return fmt.Sprintf(`[%s]`, strings.Join(getServiceDataArray(name, requestType), ","))
+        data, _ := getGossipArray(name, requestType)
+        return fmt.Sprintf(`[%s]`, strings.Join(data, ","))
 }
 
 // Once receive UDP notification that seerDestinationAddr needs seed
@@ -927,8 +935,70 @@ func TombstoneReaper() {
 }
 
 /*******************************************************************************
+    Metadata calculation
+*******************************************************************************/
+
+func getStats(int64Array []int64) (int64, int64, int64, int64) {
+        if len(int64Array) == 0 {
+                return 0, 0, 0, 0
+        }
+        /* Return min, median, 99th percentile, max */
+        ninetiethPercentileIdx := (len(int64Array) * 9) / 10
+        return int64Array[0], Median(int64Array), int64Array[ninetiethPercentileIdx], int64Array[len(int64Array)-1]
+}
+
+func getSortedTSArray(excludeHost string) []int64 {
+        seerPeers := GetSeerPeers(excludeHost)
+        tsArray := make([]int64, 0, len(seerPeers))
+        for _, peer := range seerPeers {
+                gossips, _ := getGossipArray(peer, "seer")
+                for _, gossip := range gossips {
+                        TS, err := ExtractTSFromJSON(gossip)
+                        if err != nil {
+                                continue
+                        }
+                        tsArray = append(tsArray, TS)
+                }
+        }
+        sort.Sort(Int64Array(tsArray))
+        return tsArray
+}
+
+func getSortedTSLagArray() []int64 {
+        seerPeers := GetSeerPeers("")
+        lagArray := make([]int64, 0, len(seerPeers))
+        for _, peer := range seerPeers {
+                gossips, modTimes := getGossipArray(peer, "seer")
+                for idx, gossip := range gossips {
+                        TS, err := ExtractTSFromJSON(gossip)
+                        if err != nil {
+                                continue
+                        }
+                        lag := MS(modTimes[idx]) - TS
+                        lagArray = append(lagArray, lag)
+                }
+        }
+        sort.Sort(Int64Array(lagArray))
+        return lagArray
+}
+
+/*******************************************************************************
     Silly helper functions.
 *******************************************************************************/
+
+type Int64Array []int64
+
+func (p Int64Array) Len() int           { return len(p) }
+func (p Int64Array) Less(i, j int) bool { return p[i] < p[j] }
+func (p Int64Array) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
+
+func Median(sortedArray []int64) int64 {
+        length := len(sortedArray)
+        if length%2 == 1 {
+                return sortedArray[(length-1)/2]
+        }
+        return (sortedArray[(length/2)] + sortedArray[(length/2)-1]) / 2
+}
 
 func AbsInt(x int) int {
         if x < 0 {
@@ -949,4 +1019,8 @@ func MaxInt(x int, y int) int {
                 return x
         }
         return y
+}
+
+func MS(time time.Time) int64 {
+        return time.UnixNano() / 1000000
 }
