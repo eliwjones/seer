@@ -47,7 +47,6 @@ var (
         tcpAddress     string
         gossipSocket   *net.UDPConn
         lastSeedTS     int64
-        wg             sync.WaitGroup
         seerReady      chan bool
         gossipReceived chan string
         logCounter     chan bool
@@ -703,7 +702,7 @@ func UDPServer(ipAddress string, port string) {
 
 func ServiceServer(address string) {
         /* If HTTPServer dies, guess I don't want to live anymore either. */
-        defer wg.Done()
+        defer func() { seerReady <- false }()
 
         http.HandleFunc("/", ServiceHandler)
         http.ListenAndServe(address, nil)
