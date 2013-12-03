@@ -722,13 +722,14 @@ func errorResponse(w http.ResponseWriter, message string) {
 
 func ServiceHandler(w http.ResponseWriter, r *http.Request) {
         requestTypeMap := map[string]string{
-                "host":             "host",
-                "seer":             "host",
-                "service":          "service",
-                "metadata":         "metadata",
-                "data":             "data",
-                "op":               "op",
-                "generateMetadata": "generateMetadata",
+                "host":              "host",
+                "seer":              "host",
+                "service":           "service",
+                "metadata":          "metadata",
+                "data":              "data",
+                "op":                "op",
+                "aggregateMetadata": "aggregateMetadata",
+                "generateMetadata":  "generateMetadata",
         }
         /* Allow GET by 'service' or 'seeraddr' */
         splitURL := strings.Split(r.URL.Path, "/")
@@ -740,7 +741,11 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
                         return
                 }
                 jsonPayload := ""
-                if splitURL[1] == "generateMetadata" {
+                if splitURL[1] == "aggregateMetadata" {
+                        /* Do thangs. */
+                        aggregate, _ := json.MarshalIndent(aggregateMetadata(), "", "    ")
+                        jsonPayload = string(aggregate) + "\n"
+                } else if splitURL[1] == "generateMetadata" {
                         jsonPayload = generateMetadata()
                 } else {
                         dataType := "data"
@@ -977,6 +982,16 @@ type Metadata struct {
         PeerData    int
 }
 
+type MetadataAggregate struct {
+        HostList     []string
+        PeerCounts   []int
+        GossipCounts []int
+        OpCounts     []int
+
+        TSLag   [][]int64
+        TS      [][]int64
+}
+
 func requestMetadata() {
         /* For all peers, send {"SeerAddr":udpAddress,"SeerRequest":"Metadata"} */
         message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"Metadata"}`, udpAddress)
@@ -999,6 +1014,41 @@ func generateMetadata() string {
                 return ""
         }
         return string(json)
+}
+
+func aggregateMetadata() MetadataAggregate {
+        /* Aggregate TS, TSLag, MessageData and PeerData into global view. */
+        aggregate := MetadataAggregate{}
+
+        metadataGossip, _ := getGossipArray("Seer", "service", "metadata")
+        for _, metadatumGossip := range metadataGossip {
+                var g Gossip
+                var metadatum Metadata
+                _ = json.Unmarshal([]byte(metadatumGossip), &g)
+                _ = json.Unmarshal([]byte(g.Metadata), &metadatum)
+
+                aggregate.HostList = append(aggregate.HostList, g.SeerAddr)
+
+                aggregate.PeerCounts = append(aggregate.PeerCounts, metadatum.PeerData)
+                /* May have to resort to over-verbose metadata json since don't really like mystery positional information. */
+                aggregate.GossipCounts = append(aggregate.GossipCounts, metadatum.MessageData[0])
+                aggregate.OpCounts = append(aggregate.OpCounts, metadatum.MessageData[1])
+
+                aggregate.TSLag = appendPercentileData(metadatum.TSLag, aggregate.TSLag)
+                aggregate.TS = appendPercentileData(metadatum.TS, aggregate.TS)
+        }
+        return aggregate
+}
+
+func appendPercentileData(sourceArray []int64, destinationArray [][]int64) [][]int64 {
+        lengthDiff := len(sourceArray) - len(destinationArray)
+        for i := 0; i < lengthDiff; i++ {
+                destinationArray = append(destinationArray, []int64{})
+        }
+        for idx, percentile := range sourceArray {
+                destinationArray[idx] = append(destinationArray[idx], percentile)
+        }
+        return destinationArray
 }
 
 func getStats(int64Array []int64) []int64 {
