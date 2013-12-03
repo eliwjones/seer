@@ -42,16 +42,16 @@ type Gossip struct {
 }
 
 var (
-        udpAddress     string
-        tcpAddress     string
-        gossipSocket   *net.UDPConn
-        lastSeedTS     int64
-        seerReady      chan bool
-        gossipReceived chan string
-        logCounter     chan bool
-        gossipCount    int
+        udpAddress        string
+        tcpAddress        string
+        gossipSocket      *net.UDPConn
+        lastSeedTS        int64
+        gossipReceived    chan string
+        gossipCount       int
+        uniqueGossipCount int
 
         /* Defined variables go here. */
+        BoolChannels    = map[string]chan bool{}
         SeerDirs        = map[string]string{}
         neighborhood    = -1
         commandList     = map[string]bool{"exit": true, "get": true}
@@ -107,10 +107,12 @@ func init() {
         }
 
         if *logCounts {
-                logCounter = make(chan bool, 100)
+                BoolChannels["gossipCounter"] = make(chan bool, 100)
+                BoolChannels["uniqueGossipCounter"] = make(chan bool, 100)
+
         }
         gossipCount = 0
-        seerReady = make(chan bool, 1)
+        BoolChannels["seerReady"] = make(chan bool, 1)
         gossipReceived = make(chan string, 100)
 
         udpAddress = *hostIP + ":" + *udpPort
@@ -145,7 +147,7 @@ func main() {
         */
         createGossipSocket()
         /* Must wait for UDPServer to be ready. */
-        ready := <-seerReady
+        ready := <-BoolChannels["seerReady"]
         if !ready {
                 fmt.Println("UDPServer NOT READY!")
                 os.Exit(1)
@@ -153,7 +155,7 @@ func main() {
 
         if *bootstrap != "" {
                 BootStrap(*bootstrap, tcpAddress)
-                ready = <-seerReady
+                ready = <-BoolChannels["seerReady"]
                 fmt.Printf("[Bootstrap] Received seerReady from processSeed(): %v\n", ready)
                 if !ready {
                         fmt.Println("How am I not ready?")
@@ -176,10 +178,12 @@ func main() {
         }
         for {
                 select {
-                case <-logCounter:
+                case <-BoolChannels["gossipCounter"]:
                         gossipCount += 1
-                        fmt.Printf("[logCounter] gossip count: %d\n", gossipCount)
-                case ready := <-seerReady:
+                        fmt.Printf("[gossipCounter] gossip count: %d\n", gossipCount)
+                case <-BoolChannels["uniqueGossipCounter"]:
+                        uniqueGossipCount += 1
+                case ready := <-BoolChannels["seerReady"]:
                         if !ready {
                                 /* Someone sent false to seerReady, so shut down. */
                                 fmt.Println("[seerReady] Seer is un-ready. Shutting down.")
@@ -548,7 +552,7 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
         /* Also, log gossip counts here?  Or at server? */
         if *logCounts {
                 /* Inc some global counter? */
-                logCounter <- true
+                BoolChannels["gossipCounter"] <- true
         }
         decodedGossip, err := VerifyGossip(gossip)
 
@@ -570,6 +574,9 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
 
         /* put == true implies gossip was "fresh".  Thus, spread the good news. */
         if put {
+                if *logCounts {
+                        BoolChannels["uniqueGossipCounter"] <- true
+                }
                 /* Spread the word? Or, use GossipOps()? */
                 GossipGossip(gossip)
         } else if fresherGossip != "" && !strings.Contains(gossip, `"ReGossip":true`) {
@@ -658,7 +665,7 @@ func GossipOps() {
 
 func UDPServer(ipAddress string, port string) {
         /* If UDPServer dies, I don't want to live anymore. */
-        defer func() { seerReady <- false }()
+        defer func() { BoolChannels["seerReady"] <- false }()
 
         /*
            "Have" to hack this since want to receive broadcast packets.. yet.. they don't appear to show up
@@ -685,7 +692,7 @@ func UDPServer(ipAddress string, port string) {
         }
         /* Assuming that MTU can't be below 576, which implies one has 508 bytes for payload after overhead. */
         udpBuff := make([]byte, 508)
-        seerReady <- true
+        BoolChannels["seerReady"] <- true
         for {
                 n, cm, _, err := udpLn.ReadFrom(udpBuff)
                 if err != nil {
@@ -709,7 +716,7 @@ func UDPServer(ipAddress string, port string) {
 
 func ServiceServer(address string) {
         /* If HTTPServer dies, guess I don't want to live anymore either. */
-        defer func() { seerReady <- false }()
+        defer func() { BoolChannels["seerReady"] <- false }()
 
         http.HandleFunc("/", ServiceHandler)
         http.ListenAndServe(address, nil)
@@ -932,7 +939,7 @@ func processSeed(targzpath string) {
                 }
         }
         /* Suppose might want a seedReceived channel. */
-        seerReady <- true
+        BoolChannels["seerReady"] <- true
         return
 }
 
@@ -983,10 +990,11 @@ type Metadata struct {
 }
 
 type MetadataAggregate struct {
-        HostList     []string
-        PeerCounts   []int
-        GossipCounts []int
-        OpCounts     []int
+        HostList           []string
+        PeerCounts         []int
+        GossipCounts       []int
+        UniqueGossipCounts []int
+        OpCounts           []int
 
         TSLag   [][]int64
         TS      [][]int64
@@ -1006,7 +1014,7 @@ func generateMetadata() string {
         metadata.TS = getStats(getSortedTSArray(udpAddress))
         metadata.TSLag = getStats(getSortedTSLagArray(udpAddress))
         ops, _ := getGossipArray("", "op", "data")
-        metadata.MessageData = []int{gossipCount, len(ops)}
+        metadata.MessageData = []int{gossipCount, uniqueGossipCount, len(ops)}
         metadata.PeerData = len(GetSeerPeers(udpAddress))
 
         json, err := json.Marshal(metadata)
@@ -1032,7 +1040,8 @@ func aggregateMetadata() MetadataAggregate {
                 aggregate.PeerCounts = append(aggregate.PeerCounts, metadatum.PeerData)
                 /* May have to resort to over-verbose metadata json since don't really like mystery positional information. */
                 aggregate.GossipCounts = append(aggregate.GossipCounts, metadatum.MessageData[0])
-                aggregate.OpCounts = append(aggregate.OpCounts, metadatum.MessageData[1])
+                aggregate.UniqueGossipCounts = append(aggregate.UniqueGossipCounts, metadatum.MessageData[1])
+                aggregate.OpCounts = append(aggregate.OpCounts, metadatum.MessageData[2])
 
                 aggregate.TSLag = appendPercentileData(metadatum.TSLag, aggregate.TSLag)
                 aggregate.TS = appendPercentileData(metadatum.TS, aggregate.TS)
