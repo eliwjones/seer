@@ -25,7 +25,6 @@ import (
         "sort"
         "strconv"
         "strings"
-        "sync"
         "time"
 )
 
@@ -621,6 +620,10 @@ func PutGossip(gossip string, decodedGossip Gossip) (bool, string) {
         }
         _ = LazyWriteFile(SeerDirs[gossipType]+"/service/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, []byte(gossip))
         _ = LazyWriteFile(SeerDirs[gossipType]+"/host/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, []byte(gossip))
+        if gossipType == "metadata" {
+                /* For now, don't want metadata gossipped all over the place. */
+                return false, ""
+        }
         return true, ""
 }
 
