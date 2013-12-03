@@ -523,6 +523,10 @@ func ProcessSeerRequest(decodedGossip Gossip, destinationIp string) {
         } else if decodedGossip.SeerRequest == "RequestMetadata" {
                 /* For all peers, send {"SeerAddr":udpAddress,"SeerRequest":"Metadata"} */
                 requestMetadata()
+                /* Generate and process my own metadata. */
+                metadata := generateMetadata()
+                message := fmt.Sprintf(`{"SeerAddr":"%s","ServiceName":"Seer","Metadata":%s,"TS":%d}`, udpAddress, metadata, MS(time.Now()))
+                ProcessGossip(message, *hostIP, *hostIP)
         } else if decodedGossip.SeerRequest == "Metadata" {
                 metadata := generateMetadata()
                 message := fmt.Sprintf(`{"SeerAddr":"%s","ServiceName":"Seer","Metadata":%s}`, udpAddress, metadata)
@@ -723,6 +727,7 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
                 "service":          "service",
                 "metadata":         "metadata",
                 "data":             "data",
+                "op":               "op",
                 "generateMetadata": "generateMetadata",
         }
         /* Allow GET by 'service' or 'seeraddr' */
@@ -968,7 +973,7 @@ func TombstoneReaper() {
 type Metadata struct {
         TS          []int64
         TSLag       []int64
-        MessageData int
+        MessageData []int
         PeerData    int
 }
 
@@ -985,7 +990,8 @@ func generateMetadata() string {
         var metadata Metadata
         metadata.TS = getStats(getSortedTSArray(udpAddress))
         metadata.TSLag = getStats(getSortedTSLagArray(udpAddress))
-        metadata.MessageData = gossipCount
+        ops, _ := getGossipArray("", "op", "data")
+        metadata.MessageData = []int{gossipCount, len(ops)}
         metadata.PeerData = len(GetSeerPeers(udpAddress))
 
         json, err := json.Marshal(metadata)
@@ -999,7 +1005,7 @@ func getStats(int64Array []int64) []int64 {
         if len(int64Array) == 0 {
                 return []int64{0, 0, 0, 0}
         }
-        /* Return Percentiles. */
+        /* Return Percentiles.  Currently: [0th(min), 5th, 50th(med), 95th, 100th(max)] */
         return []int64{Percentile(int64Array, 0.0), Percentile(int64Array, 0.05), Percentile(int64Array, 0.5), Percentile(int64Array, 0.95), Percentile(int64Array, 1.0)}
 }
 
