@@ -229,7 +229,7 @@ func SendGossip(gossip string, seerAddr string) {
 
 func TombstoneServices(seerAddress string) {
         /* For all my services, Gossip out Tombstones. */
-        myServices, _ := getGossipArray(seerAddress, "seer", "data")
+        myServices, _ := getGossipArray(seerAddress, "host", "data")
         for _, service := range myServices {
                 gossip := RemoveTombstone(RemoveSeerPath(UpdateTS(service)))
                 gossip = fmt.Sprintf(`%s,"Tombstone":true}`, gossip[:len(gossip)-1])
@@ -238,7 +238,7 @@ func TombstoneServices(seerAddress string) {
 }
 
 func RaiseServicesFromTheDead(seerAddress string) {
-        myServices, _ := getGossipArray(seerAddress, "seer", "data")
+        myServices, _ := getGossipArray(seerAddress, "host", "data")
         for _, service := range myServices {
                 gossip := RemoveTombstone(RemoveSeerPath(UpdateTS(service)))
                 ProcessGossip(gossip, *hostIP, *hostIP)
@@ -1005,7 +1005,7 @@ func getSortedTSArray(excludeHost string) []int64 {
         seerPeers := GetSeerPeers(excludeHost)
         tsArray := make([]int64, 0, len(seerPeers))
         for _, peer := range seerPeers {
-                gossips, _ := getGossipArray(peer, "seer", "data")
+                gossips, _ := getGossipArray(peer, "host", "data")
                 for _, gossip := range gossips {
                         TS, err := ExtractTSFromJSON(gossip)
                         if err != nil {
@@ -1022,7 +1022,7 @@ func getSortedTSLagArray(excludeHost string) []int64 {
         seerPeers := GetSeerPeers(excludeHost)
         lagArray := make([]int64, 0, len(seerPeers))
         for _, peer := range seerPeers {
-                gossips, modTimes := getGossipArray(peer, "seer", "data")
+                gossips, modTimes := getGossipArray(peer, "host", "data")
                 for idx, gossip := range gossips {
                         TS, err := ExtractTSFromJSON(gossip)
                         if err != nil {
