@@ -38,7 +38,7 @@ type Gossip struct {
         Tombstone   bool
         TS          int64
 
-        Metadata string
+        Metadata json.RawMessage
         ReGossip bool
 }
 
@@ -533,7 +533,7 @@ func ProcessSeerRequest(decodedGossip Gossip, destinationIp string) {
                 requestMetadata()
         } else if decodedGossip.SeerRequest == "Metadata" {
                 metadata := generateMetadata()
-                message := fmt.Sprintf(`{"SeerAddr":"%s","ServiceName":"Seer","Metadata":"%s"}`, udpAddress, metadata)
+                message := fmt.Sprintf(`{"SeerAddr":"%s","ServiceName":"Seer","Metadata":%s}`, udpAddress, metadata)
                 SendGossip(message, decodedGossip.SeerAddr)
         }
         return
@@ -625,7 +625,7 @@ func PutGossip(gossip string, decodedGossip Gossip) (bool, string) {
         if decodedGossip.ServiceName == "" {
                 decodedGossip.ServiceName = "Seer"
         }
-        if decodedGossip.Metadata != "" {
+        if decodedGossip.Metadata != nil {
                 /* Metadata goes in /gossip/metadata/ */
                 return PutMetadata(gossip, decodedGossip)
         }
@@ -691,7 +691,8 @@ func UDPServer(ipAddress string, port string) {
         if err != nil {
                 log.Fatal(err)
         }
-        udpBuff := make([]byte, 256)
+        /* Assuming that MTU can't be below 576, which implies one has 508 bytes for payload after overhead. */
+        udpBuff := make([]byte, 508)
         seerReady <- true
         for {
                 n, cm, _, err := udpLn.ReadFrom(udpBuff)
@@ -998,16 +999,15 @@ func generateMetadata() string {
         if err != nil {
                 return ""
         }
-        return strings.Replace(string(json), `"`, `'`, -1)
+        return string(json)
 }
 
 func getStats(int64Array []int64) []int64 {
         if len(int64Array) == 0 {
                 return []int64{0, 0, 0, 0}
         }
-        /* Return min, median, 99th percentile, max */
-        ninetiethPercentileIdx := (len(int64Array) * 9) / 10
-        return []int64{int64Array[0], Median(int64Array), int64Array[ninetiethPercentileIdx], int64Array[len(int64Array)-1]}
+        /* Return Percentiles. */
+        return []int64{Percentile(int64Array, 0.0), Percentile(int64Array, 0.05), Percentile(int64Array, 0.5), Percentile(int64Array, 0.95), Percentile(int64Array, 1.0)}
 }
 
 func getSortedTSArray(excludeHost string) []int64 {
@@ -1061,6 +1061,15 @@ func Median(sortedArray []int64) int64 {
                 return sortedArray[(length-1)/2]
         }
         return (sortedArray[(length/2)] + sortedArray[(length/2)-1]) / 2
+}
+
+func Percentile(sortedArray []int64, percentile float64) int64 {
+        maxIdx := len(sortedArray) - 1
+        idx := int((percentile * float64(maxIdx)) + 0.5) // Poor person rounding.
+        if idx > maxIdx {
+                idx = maxIdx
+        }
+        return sortedArray[idx]
 }
 
 func AbsInt(x int) int {
