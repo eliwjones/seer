@@ -43,23 +43,18 @@ type Gossip struct {
 }
 
 var (
-        SeerRoot        string
-        SeerOpDir       string
-        SeerDataDir     string
-        SeerMetadataDir string
-        SeerServiceDir  string
-        SeerHostDir     string
-        udpAddress      string
-        tcpAddress      string
-        gossipSocket    *net.UDPConn
-        lastSeedTS      int64
-        wg              sync.WaitGroup
-        seerReady       chan bool
-        gossipReceived  chan string
-        logCounter      chan bool
-        gossipCount     int
+        udpAddress     string
+        tcpAddress     string
+        gossipSocket   *net.UDPConn
+        lastSeedTS     int64
+        wg             sync.WaitGroup
+        seerReady      chan bool
+        gossipReceived chan string
+        logCounter     chan bool
+        gossipCount    int
 
         /* Defined variables go here. */
+        SeerDirs        = map[string]string{}
         neighborhood    = -1
         commandList     = map[string]bool{"exit": true, "get": true}
         seerNearness    = map[string]int{}
@@ -124,14 +119,13 @@ func init() {
         tcpAddress = *hostIP + ":" + *tcpPort
 
         /* Guarantee folder paths */
-        SeerRoot = "seer/" + udpAddress
-        SeerOpDir = SeerRoot + "/gossip/oplog"
-        SeerDataDir = SeerRoot + "/gossip/data"
-        SeerMetadataDir = SeerRoot + "/gossip/metadata"
-        SeerServiceDir = SeerDataDir + "/service"
-        SeerHostDir = SeerDataDir + "/host"
-        os.MkdirAll(SeerOpDir, 0777)
-        os.MkdirAll(SeerDataDir, 0777)
+        SeerDirs["root"] = "seer/" + udpAddress
+        SeerDirs["op"] = SeerDirs["root"] + "/gossip/oplog"
+        SeerDirs["data"] = SeerDirs["root"] + "/gossip/data"
+        SeerDirs["metadata"] = SeerDirs["root"] + "/gossip/metadata"
+
+        os.MkdirAll(SeerDirs["op"], 0777)
+        os.MkdirAll(SeerDirs["data"], 0777)
 }
 
 func main() {
@@ -416,7 +410,7 @@ func GossipGossip(gossip string) {
 }
 
 func GetSeerPeers(filters ...string) []string {
-        seerHostDir, err := os.Open(SeerHostDir)
+        seerHostDir, err := os.Open(SeerDirs["data"] + "/host")
         if err != nil {
                 fmt.Printf("[GetSeerPeers] ERR: %s\n", err)
                 return []string{}
@@ -566,7 +560,7 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
         }
         /* Write to oplog. opName limits updates from single host to 10 per nanosecond.. */
         opName := fmt.Sprintf("%d_%s_%d", time.Now().UnixNano(), decodedGossip.SeerAddr, (rand.Int()%10)+10)
-        _ = LazyWriteFile(SeerOpDir, opName+".op", []byte(gossip))
+        _ = LazyWriteFile(SeerDirs["op"], opName+".op", []byte(gossip))
         /* Save it. */
         put, fresherGossip := PutGossip(gossip, decodedGossip)
 
@@ -610,14 +604,6 @@ func VerifyGossip(gossip string) (Gossip, error) {
         return g, err
 }
 
-func PutMetadata(gossip string, decodedGossip Gossip) (bool, string) {
-        /* Just accepting host metadata.. no granularity for services yet. */
-        /* Would prefer less overwrought directory variables.. so trying that out here..  */
-        _ = LazyWriteFile(SeerMetadataDir+"/"+"host"+"/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, []byte(gossip))
-        /* For now, do not wish to re-gossip metadata.  Just accept it? */
-        return false, ""
-}
-
 func PutGossip(gossip string, decodedGossip Gossip) (bool, string) {
         /* Only checking SeerServiceDir for current TS. */
         /* Current code has odd side effect of allowing Seer data to exist for host even if we missed initial Seer HELO gossip. */
@@ -625,17 +611,17 @@ func PutGossip(gossip string, decodedGossip Gossip) (bool, string) {
         if decodedGossip.ServiceName == "" {
                 decodedGossip.ServiceName = "Seer"
         }
+        gossipType := "data"
         if decodedGossip.Metadata != nil {
-                /* Metadata goes in /gossip/metadata/ */
-                return PutMetadata(gossip, decodedGossip)
+                gossipType = "metadata"
         }
-        fresh, currentGossip := FreshGossip(SeerServiceDir+"/"+decodedGossip.ServiceName+"/"+decodedGossip.SeerAddr, decodedGossip.TS)
+        fresh, currentGossip := FreshGossip(SeerDirs[gossipType]+"/service/"+decodedGossip.ServiceName+"/"+decodedGossip.SeerAddr, decodedGossip.TS)
         if !fresh {
                 fmt.Printf("[Old Assed Gossip] I ain't writing that.\n[Gossip]: %s\n", gossip)
                 return false, currentGossip
         }
-        _ = LazyWriteFile(SeerServiceDir+"/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, []byte(gossip))
-        _ = LazyWriteFile(SeerHostDir+"/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, []byte(gossip))
+        _ = LazyWriteFile(SeerDirs[gossipType]+"/service/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, []byte(gossip))
+        _ = LazyWriteFile(SeerDirs[gossipType]+"/host/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, []byte(gossip))
         return true, ""
 }
 
@@ -776,17 +762,17 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
 func getGossipArray(name string, requestType string) ([]string, []time.Time) {
         var servicePath string
         if requestType == "service" {
-                servicePath = SeerServiceDir + "/" + name
+                servicePath = SeerDirs["data"] + "/service/" + name
         } else if requestType == "seer" {
-                servicePath = SeerHostDir + "/" + name
+                servicePath = SeerDirs["data"] + "/host/" + name
         } else if requestType == "metadata" {
                 /*
                    Can be used to get metadata for specific host.
                    Still need to aggregate metadata across hosts for report.
                 */
-                servicePath = SeerMetadataDir + "/host/" + name
+                servicePath = SeerDirs["metadata"] + "/service/" + name
         } else if requestType == "op" {
-                servicePath = SeerOpDir
+                servicePath = SeerDirs["op"]
         }
         gossipFiles, _ := ioutil.ReadDir(servicePath)
         /* read files from servicePath, append to jsonPayload. */
@@ -818,7 +804,7 @@ func getServiceData(name string, requestType string) string {
 // tar gz 'host' and 'service' dirs and PUT to seerDestinationAddr.
 func sendSeed(seerDestinationAddr string) {
         tarredGossipFile := fmt.Sprintf("/tmp/seer_generated_seed_%s_%s.tar.gz", udpAddress, seerDestinationAddr)
-        err := createTarGz(tarredGossipFile, SeerServiceDir, SeerHostDir)
+        err := createTarGz(tarredGossipFile, SeerDirs["data"]+"/service", SeerDirs["data"]+"/host")
         if err != nil {
                 fmt.Printf("[sendSeed] Failed to create tar.gz. ERR: %s\n", err)
                 return
@@ -842,9 +828,9 @@ func sendSeed(seerDestinationAddr string) {
         fmt.Printf("[sendSeed] RESPONSE: %s\nERR: %s\n", response, err)
 }
 
-// Zips up seer/<hostname>/gossip/data/ (aka SeerDataDir)
+// Zips up seer/<hostname>/gossip/data/ (aka SeerDirs["data"])
 // General usage is targeting 'host' and 'service' subfolders.
-// Removes SeerDataDir root for "easier" untarring into destination.
+// Removes SeerDirs["data"] root for "easier" untarring into destination.
 // TODO: make less stupid.
 func createTarGz(tarpath string, folders ...string) error {
         tarfile, err := os.Create(tarpath)
@@ -869,7 +855,7 @@ func createTarGz(tarpath string, folders ...string) error {
                                 return nil
                         }
                         header, err := tar.FileInfoHeader(fileinfo, path)
-                        header.Name = path[len(SeerDataDir)+1:]
+                        header.Name = path[len(SeerDirs["data"])+1:]
                         err = tw.WriteHeader(header)
                         if err != nil {
                                 fmt.Printf("Failed to write Tar Header. Err: %s\n", err)
@@ -921,8 +907,8 @@ func processSeed(targzpath string) {
                 }
                 buf := bytes.NewBuffer(nil)
                 io.Copy(buf, tr)
-                folder := filepath.Dir(SeerDataDir + "/" + hdr.Name)
-                filename := filepath.Base(SeerDataDir + "/" + hdr.Name)
+                folder := filepath.Dir(SeerDirs["data"] + "/" + hdr.Name)
+                filename := filepath.Base(SeerDirs["data"] + "/" + hdr.Name)
                 err = LazyWriteFile(folder, filename, buf.Bytes())
                 if err != nil {
                         fmt.Printf("[processSeed] ERRR: %s", err)
