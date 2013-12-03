@@ -229,7 +229,7 @@ func SendGossip(gossip string, seerAddr string) {
 
 func TombstoneServices(seerAddress string) {
         /* For all my services, Gossip out Tombstones. */
-        myServices, _ := getGossipArray(seerAddress, "seer")
+        myServices, _ := getGossipArray(seerAddress, "seer", "data")
         for _, service := range myServices {
                 gossip := RemoveTombstone(RemoveSeerPath(UpdateTS(service)))
                 gossip = fmt.Sprintf(`%s,"Tombstone":true}`, gossip[:len(gossip)-1])
@@ -238,7 +238,7 @@ func TombstoneServices(seerAddress string) {
 }
 
 func RaiseServicesFromTheDead(seerAddress string) {
-        myServices, _ := getGossipArray(seerAddress, "seer")
+        myServices, _ := getGossipArray(seerAddress, "seer", "data")
         for _, service := range myServices {
                 gossip := RemoveTombstone(RemoveSeerPath(UpdateTS(service)))
                 ProcessGossip(gossip, *hostIP, *hostIP)
@@ -716,10 +716,11 @@ func errorResponse(w http.ResponseWriter, message string) {
 
 func ServiceHandler(w http.ResponseWriter, r *http.Request) {
         requestTypeMap := map[string]string{
-                "host":             "seer",
-                "seer":             "seer",
+                "host":             "host",
+                "seer":             "host",
                 "service":          "service",
                 "metadata":         "metadata",
+                "data":             "data",
                 "generateMetadata": "generateMetadata",
         }
         /* Allow GET by 'service' or 'seeraddr' */
@@ -735,7 +736,19 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
                 if splitURL[1] == "generateMetadata" {
                         jsonPayload = generateMetadata()
                 } else {
-                        jsonPayload = getServiceData(splitURL[2], requestTypeMap[splitURL[1]])
+                        dataType := "data"
+                        requestType := requestTypeMap[splitURL[1]]
+                        name := splitURL[2]
+                        if splitURL[1] == "metadata" || splitURL[1] == "data" {
+                                if requestTypeMap[splitURL[2]] == "" {
+                                        errorResponse(w, "Please query for 'seer', 'service', 'metadata', or 'op'")
+                                        return
+                                }
+                                dataType = splitURL[1]
+                                requestType = requestTypeMap[splitURL[2]]
+                                name = splitURL[3]
+                        }
+                        jsonPayload = getServiceData(name, requestType, dataType)
                 }
                 fmt.Fprintf(w, jsonPayload)
         case "PUT":
@@ -759,19 +772,11 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
         }
 }
 
-func getGossipArray(name string, requestType string) ([]string, []time.Time) {
-        var servicePath string
-        if requestType == "service" {
-                servicePath = SeerDirs["data"] + "/service/" + name
-        } else if requestType == "seer" {
-                servicePath = SeerDirs["data"] + "/host/" + name
-        } else if requestType == "metadata" {
-                /*
-                   Can be used to get metadata for specific host.
-                   Still need to aggregate metadata across hosts for report.
-                */
-                servicePath = SeerDirs["metadata"] + "/service/" + name
-        } else if requestType == "op" {
+func getGossipArray(name string, requestType string, dataType string) ([]string, []time.Time) {
+        /* dataType in ["data","metadata"] */
+
+        servicePath := SeerDirs[dataType] + "/" + requestType + "/" + name
+        if requestType == "op" {
                 servicePath = SeerDirs["op"]
         }
         gossipFiles, _ := ioutil.ReadDir(servicePath)
@@ -794,9 +799,9 @@ func getGossipArray(name string, requestType string) ([]string, []time.Time) {
         return gossipArray, modTimeArray
 }
 
-func getServiceData(name string, requestType string) string {
+func getServiceData(name string, requestType string, dataType string) string {
         /* Construct JSON Array.  */
-        data, _ := getGossipArray(name, requestType)
+        data, _ := getGossipArray(name, requestType, dataType)
         return fmt.Sprintf(`[%s]`, strings.Join(data, ","))
 }
 
@@ -1000,7 +1005,7 @@ func getSortedTSArray(excludeHost string) []int64 {
         seerPeers := GetSeerPeers(excludeHost)
         tsArray := make([]int64, 0, len(seerPeers))
         for _, peer := range seerPeers {
-                gossips, _ := getGossipArray(peer, "seer")
+                gossips, _ := getGossipArray(peer, "seer", "data")
                 for _, gossip := range gossips {
                         TS, err := ExtractTSFromJSON(gossip)
                         if err != nil {
@@ -1017,7 +1022,7 @@ func getSortedTSLagArray(excludeHost string) []int64 {
         seerPeers := GetSeerPeers(excludeHost)
         lagArray := make([]int64, 0, len(seerPeers))
         for _, peer := range seerPeers {
-                gossips, modTimes := getGossipArray(peer, "seer")
+                gossips, modTimes := getGossipArray(peer, "seer", "data")
                 for idx, gossip := range gossips {
                         TS, err := ExtractTSFromJSON(gossip)
                         if err != nil {
