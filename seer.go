@@ -985,16 +985,14 @@ func TombstoneReaper() {
 type Metadata struct {
         TS          []int64
         TSLag       []int64
-        MessageData []int
+        MessageData map[string]int
         PeerData    int
 }
 
 type MetadataAggregate struct {
-        HostList           []string
-        PeerCounts         []int
-        GossipCounts       []int
-        UniqueGossipCounts []int
-        OpCounts           []int
+        HostList    []string
+        PeerCounts  []int
+        MessageData map[string][]int
 
         TSLag   [][]int64
         TS      [][]int64
@@ -1014,7 +1012,11 @@ func generateMetadata() string {
         metadata.TS = getStats(getSortedTSArray(udpAddress))
         metadata.TSLag = getStats(getSortedTSLagArray(udpAddress))
         ops, _ := getGossipArray("", "op", "data")
-        metadata.MessageData = []int{gossipCount, uniqueGossipCount, len(ops)}
+        metadata.MessageData = map[string]int{
+                "GossipCount":       gossipCount,
+                "UniqueGossipCount": uniqueGossipCount,
+                "OpCount":           len(ops),
+        }
         metadata.PeerData = len(GetSeerPeers(udpAddress))
 
         json, err := json.Marshal(metadata)
@@ -1027,6 +1029,7 @@ func generateMetadata() string {
 func aggregateMetadata() MetadataAggregate {
         /* Aggregate TS, TSLag, MessageData and PeerData into global view. */
         aggregate := MetadataAggregate{}
+        aggregate.MessageData = map[string][]int{}
 
         metadataGossip, _ := getGossipArray("Seer", "service", "metadata")
         for _, metadatumGossip := range metadataGossip {
@@ -1038,10 +1041,9 @@ func aggregateMetadata() MetadataAggregate {
                 aggregate.HostList = append(aggregate.HostList, g.SeerAddr)
 
                 aggregate.PeerCounts = append(aggregate.PeerCounts, metadatum.PeerData)
-                /* May have to resort to over-verbose metadata json since don't really like mystery positional information. */
-                aggregate.GossipCounts = append(aggregate.GossipCounts, metadatum.MessageData[0])
-                aggregate.UniqueGossipCounts = append(aggregate.UniqueGossipCounts, metadatum.MessageData[1])
-                aggregate.OpCounts = append(aggregate.OpCounts, metadatum.MessageData[2])
+                for _, keyName := range []string{"GossipCount", "UniqueGossipCount", "OpCount"} {
+                        aggregate.MessageData[keyName+"s"] = append(aggregate.MessageData[keyName+"s"], metadatum.MessageData[keyName])
+                }
 
                 aggregate.TSLag = appendPercentileData(metadatum.TSLag, aggregate.TSLag)
                 aggregate.TS = appendPercentileData(metadatum.TS, aggregate.TS)
