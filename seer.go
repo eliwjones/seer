@@ -320,7 +320,7 @@ func ExtractTSFromJSON(gossip string) (int64, error) {
 }
 
 func UpdateTS(gossip string) string {
-        newTS := fmt.Sprintf("%d", MS(time.Now()))
+        newTS := fmt.Sprintf("%d", MS(Now()))
         return tsRegexp.ReplaceAllString(gossip, `${1}${2}`+newTS+`${4}`)
 }
 
@@ -1156,3 +1156,7 @@ func MaxInt(x int, y int) int {
 func MS(time time.Time) int64 {
         return time.UnixNano() / 1000000
 }
+
+/* Freaky Voodoo for unittesting. */
+
+var Now = func() time.Time { return time.Now() }
