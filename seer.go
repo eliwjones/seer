@@ -19,7 +19,6 @@ import (
         "net/http"
         "os"
         "os/signal"
-        "path/filepath"
         "regexp"
         "runtime"
         "sort"
@@ -869,38 +868,51 @@ func createTarGz(tarpath string, folders ...string) error {
         defer gw.Close()
         tw := tar.NewWriter(gw)
         defer tw.Close()
+        walkme := ""
         for _, folder := range folders {
-                filepath.Walk(folder, func(path string, fileinfo os.FileInfo, err error) error {
+                /* How deep do we walk? Is this really worth doing just to avoid filepath.Walk()? */
+                levelsdeep := 1
+                dirs := []string{folder}
+                for len(dirs) > 0 {
+                        /* Pop directory to be walked from dirs array. */
+                        walkme, dirs = dirs[len(dirs)-1], dirs[:len(dirs)-1]
+                        fileinfos, err := ioutil.ReadDir(walkme)
                         if err != nil {
                                 fmt.Printf("[createTarGz] Err: %s\n", err)
                                 return err
                         }
-                        if fileinfo.IsDir() {
-                                return nil
+                        for _, fileinfo := range fileinfos {
+                                path := walkme + "/" + fileinfo.Name()
+                                if fileinfo.IsDir() {
+                                        if levelsdeep > 0 {
+                                                dirs = append(dirs, path)
+                                        }
+                                        continue
+                                }
+                                header, err := tar.FileInfoHeader(fileinfo, path)
+                                header.Name = path[len(SeerDirs["data"])+1:]
+                                err = tw.WriteHeader(header)
+                                if err != nil {
+                                        fmt.Printf("Failed to write Tar Header. Err: %s\n", err)
+                                        return err
+                                }
+                                /* Add file. */
+                                file, err := os.Open(path)
+                                if err != nil {
+                                        fmt.Printf("Failed to open path: [%s] Err: %s\n", path, err)
+                                        continue
+                                }
+                                _, err = io.Copy(tw, file)
+                                if err != nil {
+                                        fmt.Printf("Failed to copy file into tar: [%s] Err: %s\n", path, err)
+                                        file.Close()
+                                        continue
+                                }
+                                file.Close()
                         }
-                        header, err := tar.FileInfoHeader(fileinfo, path)
-                        header.Name = path[len(SeerDirs["data"])+1:]
-                        err = tw.WriteHeader(header)
-                        if err != nil {
-                                fmt.Printf("Failed to write Tar Header. Err: %s\n", err)
-                                return err
-                        }
-                        /* Add file. */
-                        file, err := os.Open(path)
-                        if err != nil {
-                                fmt.Printf("Failed to open path: [%s] Err: %s\n", path, err)
-                                return err
-                        }
-                        defer file.Close()
-                        _, err = io.Copy(tw, file)
-                        if err != nil {
-                                fmt.Printf("Failed to copy file into tar: [%s] Err: %s\n", path, err)
-                                return err
-                        }
-                        return nil
-                })
+                        levelsdeep -= 1
+                }
         }
-
         return err
 }
 
@@ -931,9 +943,9 @@ func processSeed(targzpath string) {
                 }
                 buf := bytes.NewBuffer(nil)
                 io.Copy(buf, tr)
-                folder := filepath.Dir(SeerDirs["data"] + "/" + hdr.Name)
-                filename := filepath.Base(SeerDirs["data"] + "/" + hdr.Name)
-                err = LazyWriteFile(folder, filename, buf.Bytes())
+                fullpath := SeerDirs["data"] + "/" + hdr.Name
+                filename, dir := GetFilenameAndDir(fullpath)
+                err = LazyWriteFile(dir, filename, buf.Bytes())
                 if err != nil {
                         fmt.Printf("[processSeed] ERRR: %s", err)
                 }
@@ -1115,20 +1127,18 @@ func (p Int64Array) Len() int           { return len(p) }
 func (p Int64Array) Less(i, j int) bool { return p[i] < p[j] }
 func (p Int64Array) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 
-func Median(sortedArray []int64) int64 {
-        length := len(sortedArray)
-        if length%2 == 1 {
-                return sortedArray[(length-1)/2]
-        }
-        return (sortedArray[(length/2)] + sortedArray[(length/2)-1]) / 2
+func GetFilenameAndDir(fullpath string) (string, string) {
+        /* Down and dirty, just don't like using 'filepath' package. */
+        splitfullpath := strings.Split(fullpath, "/")
+
+        filename := splitfullpath[len(splitfullpath)-1]
+        dir := fullpath[:len(fullpath)-(len(filename)+1)]
+        return filename, dir
 }
 
 func Percentile(sortedArray []int64, percentile float64) int64 {
         maxIdx := len(sortedArray) - 1
-        idx := int((percentile * float64(maxIdx)) + 0.5) // Poor person rounding.
-        if idx > maxIdx {
-                idx = maxIdx
-        }
+        idx := int(math.Ceil(percentile * float64(maxIdx)))
         return sortedArray[idx]
 }
 
