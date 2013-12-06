@@ -97,7 +97,6 @@ func Test_RemoveSeerPath(t *testing.T) {
                 updatedGossips[idx] = RemoveSeerPath(gossip)
         }
         expectedGossips := constructGossips(ts, ``, ``)
-        updatedGossips = getUniqueArray(updatedGossips)
         if !setsEqual(expectedGossips, updatedGossips) {
                 t.Errorf("RemoveSeerPath gave:%v\n%v", getUniqueArray(updatedGossips), getUniqueArray(expectedGossips))
         }
@@ -111,7 +110,6 @@ func Test_RemoveTombstone(t *testing.T) {
                 updatedGossips[idx] = RemoveTombstone(gossip)
         }
         expectedGossips := constructGossips(ts, seerPath, ``)
-        updatedGossips = getUniqueArray(updatedGossips)
         if !setsEqual(expectedGossips, updatedGossips) {
                 t.Errorf("RemoveTombstone gave:%v\n%v", getUniqueArray(updatedGossips), getUniqueArray(expectedGossips))
         }
