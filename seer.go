@@ -57,8 +57,8 @@ var (
         seerNearness    = map[string]int{}
         whitelist       = map[string]bool{}
         tsRegexp        = regexp.MustCompile(`(,?\s*)("TS"\s*:\s*)(\d+)(\s*[,|}])`)
-        seerPathRegexp  = regexp.MustCompile(`(,?\s*)("SeerPath"\s*:\s*\[)(.+?)(\]\s*,?)`)
-        tombstoneRegexp = regexp.MustCompile(`(,?\s*)("Tombstone"\s*:\s*)(true)(\s*,?)`)
+        seerPathRegexp  = regexp.MustCompile(`(\s*)("SeerPath"\s*:\s*\[)(.+?)(\]\s*)`)
+        tombstoneRegexp = regexp.MustCompile(`(\s*)("Tombstone"\s*:\s*)(true)(\s*)`)
 
         /* Flags go here */
         hostIP          = flag.String("ip", "", "REQUIRED! IP address to communicate with other Seers from.")
@@ -298,11 +298,23 @@ func UpdateSeerPath(gossip string, newpathitems string) string {
 }
 
 func RemoveSeerPath(gossip string) string {
-        return seerPathRegexp.ReplaceAllString(gossip, ``)
+        /* Guess this remove can be slow since happens infrequently. */
+        gossip = seerPathRegexp.ReplaceAllString(gossip, ``)
+        for _, replaceme := range []string{`{,`, `,,`, `,}`} {
+                with := strings.Replace(replaceme, `,`, ``, 1)
+                gossip = strings.Replace(gossip, replaceme, with, 1)
+        }
+        return gossip
 }
 
 func RemoveTombstone(gossip string) string {
-        return tombstoneRegexp.ReplaceAllString(gossip, ``)
+        /* Infrequent, so can be "slow". */
+        gossip = tombstoneRegexp.ReplaceAllString(gossip, ``)
+        for _, replaceme := range []string{`{,`, `,,`, `,}`} {
+                with := strings.Replace(replaceme, `,`, ``, 1)
+                gossip = strings.Replace(gossip, replaceme, with, 1)
+        }
+        return gossip
 }
 
 func ExtractTSFromJSON(gossip string) (int64, error) {
@@ -1134,6 +1146,32 @@ func GetFilenameAndDir(fullpath string) (string, string) {
         filename := splitfullpath[len(splitfullpath)-1]
         dir := fullpath[:len(fullpath)-(len(filename)+1)]
         return filename, dir
+}
+
+/* Thanks Hugo Steinhaus. */
+func GetCombinations(keys []string) [][]string {
+        combinations := [][]string{}
+        combinations = append(combinations, []string{keys[0]})
+        for i := 1; i < len(keys); i++ {
+                newcombinations := [][]string{}
+                /* It's a silly "optimization", but I like it. */
+                length := len(combinations[0]) + 1
+                for j := 0; j < len(combinations); j++ {
+                        combinations[j] = append(combinations[j], "")
+                        for k := 0; k < i+1; k++ {
+                                insertIdx := k % length
+                                holderarray := make([]string, len(combinations[j]))
+                                copy(holderarray, combinations[j])
+                                if insertIdx != length-1 {
+                                        copy(holderarray[insertIdx+1:], holderarray[insertIdx:])
+                                }
+                                holderarray[insertIdx] = keys[i]
+                                newcombinations = append(newcombinations, holderarray)
+                        }
+                }
+                combinations = newcombinations
+        }
+        return combinations
 }
 
 func Percentile(sortedArray []int64, percentile float64) int64 {
