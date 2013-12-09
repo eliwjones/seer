@@ -1154,18 +1154,15 @@ func GetCombinations(keys []string) [][]string {
         combinations = append(combinations, []string{keys[0]})
         for i := 1; i < len(keys); i++ {
                 newcombinations := [][]string{}
-                /* It's a silly "optimization", but I like it. */
-                length := len(combinations[0]) + 1
                 for j := 0; j < len(combinations); j++ {
                         combinations[j] = append(combinations[j], "")
                         for k := 0; k < i+1; k++ {
-                                insertIdx := k % length
-                                holderarray := make([]string, len(combinations[j]))
+                                holderarray := make([]string, i+1)
                                 copy(holderarray, combinations[j])
-                                if insertIdx != length-1 {
-                                        copy(holderarray[insertIdx+1:], holderarray[insertIdx:])
+                                if k != i {
+                                        copy(holderarray[k+1:], holderarray[k:])
                                 }
-                                holderarray[insertIdx] = keys[i]
+                                holderarray[k] = keys[i]
                                 newcombinations = append(newcombinations, holderarray)
                         }
                 }
