@@ -868,6 +868,11 @@ func sendSeed(seerDestinationAddr string) {
 // Removes SeerDirs["data"] root for "easier" untarring into destination.
 // TODO: make less stupid.
 func createTarGz(tarpath string, folders ...string) error {
+        for _, folder := range folders {
+                if !strings.HasPrefix(folder, SeerDirs["data"]) {
+                        return errors.New(fmt.Sprintf("folder: [%s] does not start with: [%s]", folder, SeerDirs["data"]))
+                }
+        }
         tarfile, err := os.Create(tarpath)
         if err != nil {
                 return err
