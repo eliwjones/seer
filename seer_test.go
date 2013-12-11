@@ -84,6 +84,54 @@ func setsEqual(arrayOne []string, arrayTwo []string) bool {
     Tests for file IO related functions.
 *******************************************************************************/
 
+func Test_LazyWriteFile(t *testing.T) {
+        rootfolder := "test-folder"
+        folder := rootfolder + "/subpath"
+        filename := "test-filename.t"
+        content := "stuff that goes in test file."
+        err := LazyWriteFile(folder, filename, []byte(content))
+        if err != nil {
+                t.Errorf("Error writing file for first time. err: %s", err)
+        }
+        defer os.RemoveAll(rootfolder)
+        readcontent, _ := ioutil.ReadFile(folder + "/" + filename)
+        if string(readcontent) != content {
+                t.Errorf("File contents don't match!. expected: %s, got: %s", content, readcontent)
+        }
+        content = "new stuff overwriting file."
+        err = LazyWriteFile(folder, filename, []byte(content))
+        if err != nil {
+                t.Errorf("Error overwriting existing file.")
+        }
+        readcontent, _ = ioutil.ReadFile(folder + "/" + filename)
+        if string(readcontent) != content {
+                t.Errorf("File contents don't match!. expected: %s, got: %s", content, readcontent)
+        }
+        if "should not match" == content {
+                t.Errorf("Content spuriously matched something that it should not match!")
+        }
+}
+
+func Test_FreshGossip(t *testing.T) {
+        // Put file with TS.. read and verify that TS is understood to be fresh or old.
+        gossipfolder := "test-gossip-folder"
+        gossipfile := "file.gossip"
+        TS := int64(1111111111)
+        gossip := fmt.Sprintf(`{"TS":%d}`, TS)
+        _ = LazyWriteFile(gossipfolder, gossipfile, []byte(gossip))
+        defer os.RemoveAll(gossipfolder)
+        TS += 100
+        fresh, _ := FreshGossip(gossipfolder+"/"+gossipfile, TS)
+        if !fresh {
+                t.Errorf("Did not report as fresh even though TS used is newer.")
+        }
+        TS -= 200
+        fresh, _ = FreshGossip(gossipfolder+"/"+gossipfile, TS)
+        if fresh {
+                t.Errorf("Reported as fresh even though TS is older.")
+        }
+}
+
 func Test_createTarGz(t *testing.T) {
         // World's most painful unittest.  Feels like I am Doing It Wrong.
         tarpath := "/tmp/go-createTarGz-test.tar.gz"
