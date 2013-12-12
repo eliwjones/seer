@@ -134,11 +134,12 @@ func Test_FreshGossip(t *testing.T) {
 }
 
 func Test_getGossipArray(t *testing.T) {
+        gossipsByService := map[string][]string{}
+        gossipsBySeer := map[string][]string{}
         gossipArray, _ := getGossipArray("catpics", "service", "data")
         if len(gossipArray) != 0 {
                 t.Errorf("There should be no 'catpics' service info here! But received len: %d, gossipArray: %v", len(gossipArray), gossipArray)
         }
-
         for idx, servicename := range []string{"catpics", "nagbot", "catpics"} {
                 idx = idx + 1
                 var g Gossip
@@ -148,11 +149,27 @@ func Test_getGossipArray(t *testing.T) {
                 g.TS = MS(Now())
                 gossip, _ := json.Marshal(g)
                 _, _ = PutGossip(string(gossip), g)
+                if gossipsByService[servicename] == nil {
+                        gossipsByService[servicename] = []string{}
+                }
+                gossipsByService[servicename] = append(gossipsByService[servicename], string(gossip))
+                if gossipsBySeer[g.SeerAddr] == nil {
+                        gossipsBySeer[g.SeerAddr] = []string{}
+                }
+                gossipsBySeer[g.SeerAddr] = append(gossipsBySeer[g.SeerAddr], string(gossip))
         }
         defer os.RemoveAll(SeerDirs["data"])
-        gossipArray, _ = getGossipArray("catpics", "service", "data")
-        if len(gossipArray) != 2 {
-                t.Errorf("There should be 2 'catpics' services here! But received len: %d, gossipArray: %v", len(gossipArray), gossipArray)
+        for servicename, gossips := range gossipsByService {
+                gossipArray, _ = getGossipArray(servicename, "service", "data")
+                if !setsEqual(gossipArray, gossips) {
+                        t.Errorf("getGossipArray: %v\n%v", gossipArray, gossips)
+                }
+        }
+        for seeraddr, gossips := range gossipsBySeer {
+                gossipArray, _ = getGossipArray(seeraddr, "host", "data")
+                if !setsEqual(gossipArray, gossips) {
+                        t.Errorf("getGossipArray: %v\n%v", gossipArray, gossips)
+                }
         }
 }
 
