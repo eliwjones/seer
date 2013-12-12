@@ -49,6 +49,44 @@ func constructGossips(ts int64, seerPath string, tombstone string) []string {
         return gossips
 }
 
+func constructTestTarGz(tarpath string, filemap map[string]string) error {
+        /* Map "should" be of form
+           filemap := map[string]string{`host/2.2.2.2:2222/Seer` : `{"SeerAddr":"2.2.2.2:2222","TS":MS(Now())}`, `host/3.3.3.3:3333/Seer` : `{"SeerAddr":"3.3.3.3:3333","TS":MS(Now())}`}
+        */
+        tarfile, err := os.Create(tarpath)
+        if err != nil {
+                return err
+        }
+        // Hacky since too lazy to learn how to manually set file permissions in tar header.
+        tarfileinfo, err := tarfile.Stat()
+        if err != nil {
+                return err
+        }
+        gw, err := gzip.NewWriterLevel(tarfile, gzip.BestCompression)
+        if err != nil {
+                return err
+        }
+        defer gw.Close()
+        tw := tar.NewWriter(gw)
+        defer tw.Close()
+        for filepath, filedata := range filemap {
+                hdr := &tar.Header{
+                        Name:   filepath,
+                        Size:   int64(len(filedata)),
+                        Mode:   int64(tarfileinfo.Mode()),
+                }
+                err = tw.WriteHeader(hdr)
+                if err != nil {
+                }
+                _, err = tw.Write([]byte(filedata))
+                if err != nil {
+                }
+        }
+        tw.Close()
+        gw.Close()
+        return err
+}
+
 func getUniqueArray(array []string) []string {
         uniquifier := map[string]bool{}
         for _, item := range array {
@@ -237,61 +275,30 @@ func Test_createTarGz(t *testing.T) {
 }
 
 func Test_processSeed(t *testing.T) {
-        // Contender for World's Ugliest Unittest.
-        tarpath := "/tmp/go-processSeed-test.tar.gz"
-        tarfile, err := os.Create(tarpath)
-        if err != nil {
-                t.Errorf("Error creating tarfile")
+        // Less Ugly
+        TS := MS(Now())
+        filemap := map[string]string{
+                `host/2.2.2.2:2222/Seer`: fmt.Sprintf(`{"SeerAddr":"2.2.2.2:2222","TS":%d}`, TS),
+                `host/3.3.3.3:3333/Seer`: fmt.Sprintf(`{"SeerAddr":"3.3.3.3:3333","TS":%d}`, TS),
         }
-        // Hacky since too lazy to learn how to manually set file permissions in tar header.
-        tarfileinfo, err := tarfile.Stat()
+        tarpath := "/tmp/go-processSeed-test.tar.gz"
+        err := constructTestTarGz(tarpath, filemap)
         if err != nil {
-                t.Errorf("Error stat-ing tarfile.")
+                t.Errorf("Error creating tarfile: %v", err)
         }
         defer os.Remove(tarpath)
-        gw, err := gzip.NewWriterLevel(tarfile, gzip.BestCompression)
-        if err != nil {
-                t.Errorf("Error creating gzip Writer.")
-        }
-        defer gw.Close()
-        tw := tar.NewWriter(gw)
-        defer tw.Close()
-        var files = []struct {
-                Name, Body string
-        }{
-                {"testdir1/subdir/file1", "seer/127.0.0.9:9999/gossip/data/testdir1/subdir/file1"},
-                {"testdir2/subdir/file2", "seer/127.0.0.9:9999/gossip/data/testdir2/subdir/file2"},
-        }
-        for _, file := range files {
-                hdr := &tar.Header{
-                        Name:   file.Name,
-                        Size:   int64(len(file.Body)),
-                        Mode:   int64(tarfileinfo.Mode()),
-                }
-                err = tw.WriteHeader(hdr)
-                if err != nil {
-                }
-                _, err = tw.Write([]byte(file.Body))
-                if err != nil {
-                }
-        }
-        tw.Close()
-        gw.Close()
+        defer os.RemoveAll(SeerDirs["data"])
 
         processSeed(tarpath)
-        defer os.RemoveAll(SeerDirs["data"] + "/testdir1")
-        defer os.RemoveAll(SeerDirs["data"] + "/testdir2")
-        // Verify files are found.
-        for _, file := range files {
-                // file.Name == path
-                // file.Body == stuff
-                processedPath := SeerDirs["data"] + "/" + file.Name
+
+        for filepath, filedata := range filemap {
+                processedPath := SeerDirs["data"] + "/" + filepath
                 processedFile, err := ioutil.ReadFile(processedPath)
                 if err != nil {
                         t.Errorf("Error finding processedPath: %s", processedPath)
                 }
-                if string(processedFile) != file.Body {
-                        t.Errorf("File Contents mismatch: [%s] != [%s]", string(processedFile), file.Body)
+                if string(processedFile) != filedata {
+                        t.Errorf("File Contents mismatch: [%s] != [%s]", string(processedFile), filedata)
                 }
         }
 }
