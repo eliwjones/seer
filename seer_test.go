@@ -4,6 +4,7 @@ import (
         "archive/tar"
         "bytes"
         "compress/gzip"
+        "encoding/json"
         "fmt"
         "io"
         "io/ioutil"
@@ -129,6 +130,29 @@ func Test_FreshGossip(t *testing.T) {
         fresh, _ = FreshGossip(gossipfolder+"/"+gossipfile, TS)
         if fresh {
                 t.Errorf("Reported as fresh even though TS is older.")
+        }
+}
+
+func Test_getGossipArray(t *testing.T) {
+        gossipArray, _ := getGossipArray("catpics", "service", "data")
+        if len(gossipArray) != 0 {
+                t.Errorf("There should be no 'catpics' service info here! But received len: %d, gossipArray: %v", len(gossipArray), gossipArray)
+        }
+
+        for idx, servicename := range []string{"catpics", "nagbot", "catpics"} {
+                idx = idx + 1
+                var g Gossip
+                g.SeerAddr = fmt.Sprintf("%d.%d.%d.%d:%d%d%d%d", idx, idx, idx, idx, idx, idx, idx, idx)
+                g.ServiceName = servicename
+                g.ServiceAddr = fmt.Sprintf("%s:%d%d%d%d", g.SeerAddr, idx+1, idx+1, idx+1, idx+1)
+                g.TS = MS(Now())
+                gossip, _ := json.Marshal(g)
+                _, _ = PutGossip(string(gossip), g)
+        }
+        defer os.RemoveAll(SeerDirs["data"])
+        gossipArray, _ = getGossipArray("catpics", "service", "data")
+        if len(gossipArray) != 2 {
+                t.Errorf("There should be 2 'catpics' services here! But received len: %d, gossipArray: %v", len(gossipArray), gossipArray)
         }
 }
 
