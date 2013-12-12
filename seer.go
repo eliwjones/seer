@@ -525,7 +525,13 @@ func ProcessSeerRequest(decodedGossip Gossip, destinationIp string) {
                 SendGossip(message, decodedGossip.SeerAddr)
         } else if decodedGossip.SeerRequest == "SeedMe" {
                 /* Received direct "SeedMe" request.  Send seed. */
-                sendSeed(decodedGossip.SeerAddr)
+                tarredGossipFile := fmt.Sprintf("/tmp/seer_generated_seed_%s_%s.tar.gz", udpAddress, decodedGossip.SeerAddr)
+                err := createTarGz(tarredGossipFile, SeerDirs["data"]+"/service", SeerDirs["data"]+"/host")
+                if err != nil {
+                        fmt.Printf("[SeedMe] Failed to create tar.gz. ERR: %s\n", err)
+                        return
+                }
+                sendSeed(decodedGossip.SeerAddr, tarredGossipFile)
         } else if decodedGossip.SeerRequest == "SeedYou" {
                 /* Seer thinks I want a Seed.. do I? */
                 if time.Now().UnixNano() >= lastSeedTS+1000000000*30 {
@@ -837,13 +843,7 @@ func getServiceData(name string, requestType string, dataType string) string {
 
 // Once receive UDP notification that seerDestinationAddr needs seed
 // tar gz 'host' and 'service' dirs and PUT to seerDestinationAddr.
-func sendSeed(seerDestinationAddr string) {
-        tarredGossipFile := fmt.Sprintf("/tmp/seer_generated_seed_%s_%s.tar.gz", udpAddress, seerDestinationAddr)
-        err := createTarGz(tarredGossipFile, SeerDirs["data"]+"/service", SeerDirs["data"]+"/host")
-        if err != nil {
-                fmt.Printf("[sendSeed] Failed to create tar.gz. ERR: %s\n", err)
-                return
-        }
+func sendSeed(seerDestinationAddr string, tarredGossipFile string) {
         /* Open file */
         rbody, _ := os.Open(tarredGossipFile)
         /* Put file */
