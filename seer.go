@@ -31,13 +31,13 @@ type Gossip struct {
         SeerAddr    string
         ServiceName string
         ServiceAddr string
-        SeerRequest string
-        SeerPath    []string
-        Tombstone   bool
-        TS          int64
+        SeerRequest string   `json:",omitempty"`
+        SeerPath    []string `json:",omitempty"`
+        Tombstone   bool     `json:",omitempty"`
+        TS          int64    `json:",omitempty"`
 
-        Metadata json.RawMessage
-        ReGossip bool
+        Metadata json.RawMessage `json:",omitempty"`
+        ReGossip bool            `json:",omitempty"`
 }
 
 var (
