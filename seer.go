@@ -531,7 +531,7 @@ func ProcessSeerRequest(decodedGossip Gossip, destinationIp string) {
                         fmt.Printf("[SeedMe] Failed to create tar.gz. ERR: %s\n", err)
                         return
                 }
-                sendSeed(decodedGossip.SeerAddr, tarredGossipFile)
+                _ = sendSeed(decodedGossip.SeerAddr, tarredGossipFile)
         } else if decodedGossip.SeerRequest == "SeedYou" {
                 /* Seer thinks I want a Seed.. do I? */
                 if time.Now().UnixNano() >= lastSeedTS+1000000000*30 {
@@ -843,24 +843,25 @@ func getServiceData(name string, requestType string, dataType string) string {
 
 // Once receive UDP notification that seerDestinationAddr needs seed
 // tar gz 'host' and 'service' dirs and PUT to seerDestinationAddr.
-func sendSeed(seerDestinationAddr string, tarredGossipFile string) {
+func sendSeed(seerDestinationAddr string, tarredGossipFile string) error {
         /* Open file */
         rbody, _ := os.Open(tarredGossipFile)
         /* Put file */
         request, err := http.NewRequest("PUT", "http://"+seerDestinationAddr+"/seed", rbody)
         if err != nil {
                 fmt.Printf("[sendSeed] ERROR MAKING REQUEST: %s\n", err)
-                return
+                return err
         }
         stat, err := rbody.Stat()
         if err != nil {
                 fmt.Printf("[sendSeed] ERROR WITH STAT(): %s\n", err)
-                return
+                return err
         } else {
                 request.ContentLength = stat.Size()
         }
         response, err := http.DefaultClient.Do(request)
         fmt.Printf("[sendSeed] RESPONSE: %s\nERR: %s\n", response, err)
+        return err
 }
 
 // Zips up seer/<hostname>/gossip/data/ (aka SeerDirs["data"])
