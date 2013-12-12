@@ -329,6 +329,23 @@ func Test_UpdateTS_1(t *testing.T) {
 }
 
 /*******************************************************************************
+    Tests for Metadata functions.
+*******************************************************************************/
+
+func Test_getTSLag(t *testing.T) {
+        unixtime := Now()
+        ts := MS(unixtime)
+        for _, constructedLag := range []int64{-100, 0, 100} {
+                newts := ts - constructedLag
+                gossip := fmt.Sprintf(`{"TS":%d}`, newts)
+                lag, err := getTSLag(gossip, unixtime)
+                if lag != constructedLag || err != nil {
+                        t.Errorf("Lag expected to be %v with no error but got -  lag:%v, err:%v, gossip: %s", constructedLag, lag, err, gossip)
+                }
+        }
+}
+
+/*******************************************************************************
     Tests for silly helper functions.
 *******************************************************************************/
 

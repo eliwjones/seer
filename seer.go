@@ -1122,16 +1122,24 @@ func getSortedTSLagArray(excludeHost string) []int64 {
         for _, peer := range seerPeers {
                 gossips, modTimes := getGossipArray(peer, "host", "data")
                 for idx, gossip := range gossips {
-                        TS, err := ExtractTSFromJSON(gossip)
+                        lag, err := getTSLag(gossip, modTimes[idx])
                         if err != nil {
                                 continue
                         }
-                        lag := MS(modTimes[idx]) - TS
                         lagArray = append(lagArray, lag)
                 }
         }
         sort.Sort(Int64Array(lagArray))
         return lagArray
+}
+
+func getTSLag(gossip string, modtime time.Time) (int64, error) {
+        TS, err := ExtractTSFromJSON(gossip)
+        if err != nil {
+                return 0, err
+        }
+        lag := MS(modtime) - TS
+        return lag, nil
 }
 
 /*******************************************************************************
