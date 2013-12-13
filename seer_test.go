@@ -9,6 +9,7 @@ import (
         "io"
         "io/ioutil"
         "os"
+        "runtime"
         "sort"
         "strings"
         "testing"
@@ -57,6 +58,7 @@ func constructTestTarGz(tarpath string, filemap map[string]string) error {
         if err != nil {
                 return err
         }
+        defer tarfile.Close()
         // Hacky since too lazy to learn how to manually set file permissions in tar header.
         tarfileinfo, err := tarfile.Stat()
         if err != nil {
@@ -209,6 +211,44 @@ func Test_getGossipArray(t *testing.T) {
                         t.Errorf("getGossipArray: %v\n%v", gossipArray, gossips)
                 }
         }
+}
+
+func Test_sendSeed(t *testing.T) {
+        // Sort of does and doesn't work which means it does not work.
+        // Suppose this is a case where a dummy PUT handler would work fine.
+        ServiceServer(tcpAddress)
+        // Wait for server to start.
+        <-BoolChannels["seerReady"]
+
+        TS := MS(Now())
+        filemap := map[string]string{
+                `host/2.2.2.2:2222/Seer`: fmt.Sprintf(`{"SeerAddr":"2.2.2.2:2222","TS":%d}`, TS),
+                `host/3.3.3.3:3333/Seer`: fmt.Sprintf(`{"SeerAddr":"3.3.3.3:3333","TS":%d}`, TS),
+        }
+        tarpath := "/tmp/go-sendSeed-test.tar.gz"
+        err := constructTestTarGz(tarpath, filemap)
+        if err != nil {
+                t.Errorf("Error creating test tarfile: %v", err)
+        }
+        defer os.Remove(tarpath)
+        defer os.RemoveAll(SeerDirs["data"])
+        err = sendSeed(tcpAddress, tarpath)
+        if err != nil {
+                t.Errorf("sendSeed() reported error: %s", err)
+        }
+        // Then maybe test that constructed data appears in self?
+        //for len(BoolChannels["seerReady"]) == 0 {
+        //        runtime.Gosched()
+        //}
+        //<-BoolChannels["seerReady"]
+        /*
+           time.Sleep(100*time.Millisecond)
+           for _, seeraddr := range []string{"2.2.2.2:2222", "3.3.3.3:3333"} {
+                   gossipArray, err := getGossipArray(seeraddr, "host", "data")
+                   if len(gossipArray) != 1 {
+                           t.Errorf("Couldn't find host data for SeerAddr: %s, gossipArray: %v, err: %s", seeraddr, gossipArray, err)
+                   }
+           }*/
 }
 
 func Test_createTarGz(t *testing.T) {
