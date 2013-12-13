@@ -111,7 +111,7 @@ func init() {
 
         }
         gossipCount = 0
-        BoolChannels["seerReady"] = make(chan bool, 1)
+        BoolChannels["seerReady"] = make(chan bool, 100)
         gossipReceived = make(chan string, 100)
 
         udpAddress = *hostIP + ":" + *udpPort
@@ -845,7 +845,11 @@ func getServiceData(name string, requestType string, dataType string) string {
 // tar gz 'host' and 'service' dirs and PUT to seerDestinationAddr.
 func sendSeed(seerDestinationAddr string, tarredGossipFile string) error {
         /* Open file */
-        rbody, _ := os.Open(tarredGossipFile)
+        rbody, err := os.Open(tarredGossipFile)
+        if err != nil {
+                return err
+        }
+        defer rbody.Close()
         /* Put file */
         request, err := http.NewRequest("PUT", "http://"+seerDestinationAddr+"/seed", rbody)
         if err != nil {
@@ -856,11 +860,10 @@ func sendSeed(seerDestinationAddr string, tarredGossipFile string) error {
         if err != nil {
                 fmt.Printf("[sendSeed] ERROR WITH STAT(): %s\n", err)
                 return err
-        } else {
-                request.ContentLength = stat.Size()
         }
+        request.ContentLength = stat.Size()
         response, err := http.DefaultClient.Do(request)
-        fmt.Printf("[sendSeed] RESPONSE: %s\nERR: %s\n", response, err)
+        fmt.Printf("[sendSeed]\nrequest.ContentLength: %v\nRESPONSE: %v\nERR: %v\n", request.ContentLength, response, err)
         return err
 }
 
