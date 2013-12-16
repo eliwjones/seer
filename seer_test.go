@@ -537,10 +537,43 @@ func Test_MS_1(t *testing.T) {
         }
 }
 
-func Test_MergeDelimitedStrings(t *testing.T) {
+func Test_MergeDelimitedStrings_1(t *testing.T) {
         current := `c,d,e,f`
         new := `a,b,c,d`
         expected := `a,b,c,d,e,f`
+
+        merged := MergeDelimitedStrings(current, new)
+        if merged != expected {
+                t.Errorf("Expected: %s, Got: %s", expected, merged)
+        }
+}
+
+func Test_MergeDelimitedStrings_2(t *testing.T) {
+        current := ``
+        new := `a,b,c,d`
+        expected := `a,b,c,d`
+
+        merged := MergeDelimitedStrings(current, new)
+        if merged != expected {
+                t.Errorf("Expected: %s, Got: %s", expected, merged)
+        }
+}
+
+func Test_MergeDelimitedStrings_3(t *testing.T) {
+        current := `c,d,e,f`
+        new := ``
+        expected := `c,d,e,f`
+
+        merged := MergeDelimitedStrings(current, new)
+        if merged != expected {
+                t.Errorf("Expected: %s, Got: %s", expected, merged)
+        }
+}
+
+func Test_MergeDelimitedStrings_4(t *testing.T) {
+        current := ``
+        new := ``
+        expected := ``
 
         merged := MergeDelimitedStrings(current, new)
         if merged != expected {

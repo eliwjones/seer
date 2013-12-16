@@ -607,7 +607,9 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
                 /* Merge SeerPaths and re-gossip. */
                 gossip = gossip[:len(gossip)-1] + `,"ReGossip":true}`
                 seerPath, _ := ExtractSeerPathFromJSON(fresherGossip, false)
-                gossip = UpdateSeerPath(gossip, seerPath)
+                otherSeerPath, _ := ExtractSeerPathFromJSON(gossip, false)
+                mergedSeerPath := MergeDelimitedStrings(seerPath, otherSeerPath)
+                gossip = ReplaceSeerPath(gossip, mergedSeerPath)
                 GossipGossip(gossip)
         }
 }
@@ -1238,7 +1240,11 @@ func MergeDelimitedStrings(current string, new string) string {
         }
         merged := strings.Join(newitems, ",")
         if current != "" {
-                merged = merged + `,` + current
+                if merged != "" {
+                        merged = merged + `,` + current
+                } else {
+                        merged = current
+                }
         }
         return merged
 }
