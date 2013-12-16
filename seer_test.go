@@ -359,6 +359,22 @@ func Test_UpdateSeerPath(t *testing.T) {
         }
 }
 
+func Test_ReplaceSeerPath(t *testing.T) {
+        seerPath := `"1.1.1.1:1111","2.2.2.2:2222"`
+        newSeerPath := `"3.3.3.3:3333","4.4.4.4:4444"`
+        ts := int64(1111111111111)
+        updatedGossips := constructGossips(ts, seerPath, ``)
+
+        for idx, gossip := range updatedGossips {
+                updatedGossips[idx] = ReplaceSeerPath(gossip, newSeerPath)
+        }
+
+        expectedGossips := constructGossips(ts, newSeerPath, ``)
+        if !setsEqual(expectedGossips, updatedGossips) {
+                t.Errorf("UpdateSeerPath: %v\n%v", getUniqueArray(updatedGossips), getUniqueArray(expectedGossips))
+        }
+}
+
 func Test_RemoveSeerPath(t *testing.T) {
         ts := int64(1111111111111)
         updatedGossips := constructGossips(ts, `"1.1.1.1:1111","2.2.2.2:2222"`, ``)
@@ -518,5 +534,16 @@ func Test_MS_1(t *testing.T) {
         testTime := time.Unix(1386118310, 0)
         if MS(testTime) != 1386118310000 {
                 t.Error("MS() Broken!")
+        }
+}
+
+func Test_MergeDelimitedStrings(t *testing.T) {
+        current := `c,d,e,f`
+        new := `a,b,c,d`
+        expected := `a,b,c,d,e,f`
+
+        merged := MergeDelimitedStrings(current, new)
+        if merged != expected {
+                t.Errorf("Expected: %s, Got: %s", expected, merged)
         }
 }

@@ -297,6 +297,13 @@ func UpdateSeerPath(gossip string, newpathitems string) string {
         return gossip
 }
 
+func ReplaceSeerPath(gossip string, newpathitems string) string {
+        if newpathitems != "" {
+                gossip = seerPathRegexp.ReplaceAllString(gossip, `${1}${2}`+newpathitems+`${4}`)
+        }
+        return gossip
+}
+
 func RemoveSeerPath(gossip string) string {
         /* Guess this remove can be slow since happens infrequently. */
         gossip = seerPathRegexp.ReplaceAllString(gossip, ``)
@@ -1217,6 +1224,23 @@ func MaxInt(x int, y int) int {
 
 func MS(time time.Time) int64 {
         return time.UnixNano() / 1000000
+}
+
+func MergeDelimitedStrings(current string, new string) string {
+        // Guess can make work for any generic delimiter.
+        // For now, just ","
+        items := strings.Split(new, ",")
+        newitems := []string{}
+        for _, item := range items {
+                if strings.LastIndex(current, item) == -1 {
+                        newitems = append(newitems, item)
+                }
+        }
+        merged := strings.Join(newitems, ",")
+        if current != "" {
+                merged = merged + `,` + current
+        }
+        return merged
 }
 
 /* Freaky Voodoo for unittesting. */
