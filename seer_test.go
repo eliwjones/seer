@@ -50,9 +50,6 @@ func constructGossips(ts int64, seerPath string, tombstone string) []string {
 }
 
 func constructTestTarGz(tarpath string, filemap map[string]string) error {
-        /* Map "should" be of form
-           filemap := map[string]string{`host/2.2.2.2:2222/Seer` : `{"SeerAddr":"2.2.2.2:2222","TS":MS(Now())}`, `host/3.3.3.3:3333/Seer` : `{"SeerAddr":"3.3.3.3:3333","TS":MS(Now())}`}
-        */
         tarfile, err := os.Create(tarpath)
         if err != nil {
                 return err
@@ -83,8 +80,6 @@ func constructTestTarGz(tarpath string, filemap map[string]string) error {
                 if err != nil {
                 }
         }
-        tw.Close()
-        gw.Close()
         return err
 }
 
@@ -98,6 +93,18 @@ func getUniqueArray(array []string) []string {
                 result = append(result, item)
         }
         return result
+}
+
+func int64ArraysEqual(array1 []int64, array2 []int64) bool {
+        if len(array1) != len(array2) {
+                return false
+        }
+        for idx, val := range array1 {
+                if array2[idx] != val {
+                        return false
+                }
+        }
+        return true
 }
 
 func setsEqual(arrayOne []string, arrayTwo []string) bool {
@@ -428,13 +435,7 @@ func Test_getTSLag(t *testing.T) {
 func Test_Int64Array_1(t *testing.T) {
         intArray := []int64{9, 8, 1, 3, 2, 4, 7, 6, 5, 0}
         sort.Sort(Int64Array(intArray))
-        notSorted := false
-        for idx, val := range intArray {
-                if int64(idx) != val {
-                        notSorted = true
-                }
-        }
-        if notSorted {
+        if !int64ArraysEqual(intArray, []int64{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}) {
                 t.Error("Int64Array sorting Broken!")
         }
 }
