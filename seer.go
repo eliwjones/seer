@@ -403,7 +403,7 @@ func ChooseNFromArrayNonDeterministically(n int, array []string) []string {
 func GossipGossip(gossip string) {
         fmt.Printf("[GossipGossip] Gossiping Gossip: %s\n", gossip)
         seerPath, _ := ExtractSeerPathFromJSON(gossip, true)
-        seerPeers := GetSeerPeers(udpAddress, seerPath)
+        seerPeers, _ := GetSeerPeers(udpAddress, seerPath)
         if len(seerPeers) == 0 {
                 fmt.Println("[GossipGossip] No peers! No one to gossip with.")
                 return
@@ -428,18 +428,18 @@ func GossipGossip(gossip string) {
         }
 }
 
-func GetSeerPeers(filters ...string) []string {
+func GetSeerPeers(filters ...string) ([]string, map[string]bool) {
         seerHostDir, err := os.Open(SeerDirs["data"] + "/host")
         if err != nil {
                 fmt.Printf("[GetSeerPeers] ERR: %s\n", err)
-                return []string{}
+                return []string{}, map[string]bool{}
         }
 
         seerPeers, err := seerHostDir.Readdirnames(-1)
         seerHostDir.Close()
         if err != nil {
                 fmt.Printf("[GetSeerPeers] ERR: %s\n", err)
-                return []string{}
+                return []string{}, map[string]bool{}
         }
         seerMap := map[string]bool{}
         for _, seerPeer := range seerPeers {
@@ -468,7 +468,7 @@ func GetSeerPeers(filters ...string) []string {
                         seerPeers = append(seerPeers, seerPeer)
                 }
         }
-        return seerPeers
+        return seerPeers, seerMap
 }
 
 func NormalizeSeerPeersByNearness(seerPeers []string) []string {
@@ -1042,7 +1042,7 @@ type MetadataAggregate struct {
 func requestMetadata() {
         /* For all peers, send {"SeerAddr":udpAddress,"SeerRequest":"Metadata"} */
         message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"Metadata"}`, udpAddress)
-        seerPeers := GetSeerPeers(udpAddress)
+        seerPeers, _ := GetSeerPeers(udpAddress)
         for _, peer := range seerPeers {
                 SendGossip(message, peer)
         }
@@ -1058,7 +1058,8 @@ func generateMetadata() string {
                 "UniqueGossipCount": uniqueGossipCount,
                 "OpCount":           len(ops),
         }
-        metadata.PeerData = len(GetSeerPeers(udpAddress))
+        seerPeers, _ := GetSeerPeers(udpAddress)
+        metadata.PeerData = len(seerPeers)
 
         json, err := json.Marshal(metadata)
         if err != nil {
@@ -1112,7 +1113,7 @@ func getStats(int64Array []int64) []int64 {
 }
 
 func getSortedTSArray(excludeHost string) []int64 {
-        seerPeers := GetSeerPeers(excludeHost)
+        seerPeers, _ := GetSeerPeers(excludeHost)
         tsArray := make([]int64, 0, len(seerPeers))
         for _, peer := range seerPeers {
                 gossips, _ := getGossipArray(peer, "host", "data")
@@ -1129,7 +1130,7 @@ func getSortedTSArray(excludeHost string) []int64 {
 }
 
 func getSortedTSLagArray(excludeHost string) []int64 {
-        seerPeers := GetSeerPeers(excludeHost)
+        seerPeers, _ := GetSeerPeers(excludeHost)
         lagArray := make([]int64, 0, len(seerPeers))
         for _, peer := range seerPeers {
                 gossips, modTimes := getGossipArray(peer, "host", "data")
