@@ -495,12 +495,15 @@ func UpdateSeerNearness() {
                 case gossip := <-gossipReceived:
                         seerPeers, _ := ExtractSeerPathFromJSON(gossip, true)
                         for index, seerPeer := range strings.Split(seerPeers, ",") {
-                                if index > 1 || seerPeer == "" {
+                                if seerPeer == "" {
                                         continue
                                 } else if index == 0 {
                                         seerNearness[seerPeer] += 1
                                 } else if index == 1 {
                                         seerNearness[seerPeer] -= 1
+                                } else {
+                                        // Postponing change until clear on implications of adding 3rd degree peers to seerNearness.
+                                        //seerNearness[seerPeer] += 0
                                 }
                         }
                         fmt.Printf("[UpdateSeerConnectivity] seerNearness: %#v\n", seerNearness)
@@ -602,14 +605,11 @@ func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
                 }
                 /* Spread the word? Or, use GossipOps()? */
                 GossipGossip(gossip)
-        } else if fresherGossip != "" && !strings.Contains(gossip, `"ReGossip":true`) {
-                /* Merge SeerPaths and re-gossip. */
-                gossip = gossip[:len(gossip)-1] + `,"ReGossip":true}`
-                seerPath, _ := ExtractSeerPathFromJSON(fresherGossip, false)
-                otherSeerPath, _ := ExtractSeerPathFromJSON(gossip, false)
-                mergedSeerPath := MergeDelimitedStrings(seerPath, otherSeerPath)
-                gossip = ReplaceSeerPath(gossip, mergedSeerPath)
-                GossipGossip(gossip)
+        } else {
+                regossip := ReGossip(fresherGossip, gossip)
+                if regossip != "" {
+                        GossipGossip(regossip)
+                }
         }
 }
 
@@ -662,6 +662,20 @@ func PutGossip(gossip string, decodedGossip Gossip) (bool, string) {
         }
         return true, ""
 }
+
+func ReGossip(fresherGossip string, gossip string) string {
+        regossip := ""
+        if fresherGossip != "" && !strings.Contains(gossip, `"ReGossip":true`) {
+                /* Merge SeerPaths and re-gossip. */
+                gossip = gossip[:len(gossip)-1] + `,"ReGossip":true}`
+                seerPath, _ := ExtractSeerPathFromJSON(fresherGossip, false)
+                otherSeerPath, _ := ExtractSeerPathFromJSON(gossip, false)
+                mergedSeerPath := MergeDelimitedStrings(seerPath, otherSeerPath)
+                regossip = ReplaceSeerPath(gossip, mergedSeerPath)
+        }
+        return regossip
+}
+
 
 func LazyWriteFile(folderName string, fileName string, data []byte) error {
         err := ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
@@ -975,6 +989,7 @@ func processSeed(targzpath string) {
                 fullpath := SeerDirs["data"] + "/" + hdr.Name
                 filename, dir := GetFilenameAndDir(fullpath)
                 err = LazyWriteFile(dir, filename, buf.Bytes())
+             
                 if err != nil {
                         fmt.Printf("[processSeed] ERRR: %s", err)
                 }
@@ -1001,13 +1016,18 @@ func BackgroundLoop(name string, seconds int, fns ...func()) {
 }
 
 func AntiEntropy() {
-        /*
-           1. Wrapped by background jobs. (Sleep Q seconds then do.)
-           2. Check random host gossip/source (or gossip/services) zip checksum.
-           3. Sync if checksum no match.
-
-        */
-        fmt.Printf("[AntiEntropy] I grab fill copies of other host dbs occassionally.\n")
+        // Sexier to just compare seerNearness keys against gossip/data/host info.
+        //   - If see host in seerNearness that is "unknown" ask it for its info.
+        _, seerPeerMap := GetSeerPeers()
+        for seerPeer, _ := range seerNearness {
+                _, peerFound := seerPeerMap[seerPeer]
+                if !peerFound {
+                        // Ask for seed from unknown peer and return.
+                        BootStrap(seerPeer, tcpAddress)
+                        seerNearness[seerPeer] = 0
+                        return
+                }
+        }
 }
 
 func TombstoneReaper() {

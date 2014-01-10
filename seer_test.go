@@ -128,6 +128,40 @@ func setsEqual(arrayOne []string, arrayTwo []string) bool {
 }
 
 /*******************************************************************************
+    Tests for basic gossip functions.
+*******************************************************************************/
+
+func Test_ReGossip(t *testing.T) {
+        fresherGossip := `{"SeerAddr":"1.1.1.1:1","TS":999999999,"SeerPath":["2.2.2.2:2222"]}`
+        gossip := `{"SeerAddr":"1.1.1.1:1","TS":888888888,"SeerPath":["3.3.3.3:3333"]}`
+
+        regossip := ReGossip(fresherGossip, gossip)
+        expectedgossip := `{"SeerAddr":"1.1.1.1:1","TS":888888888,"SeerPath":["3.3.3.3:3333","2.2.2.2:2222"],"ReGossip":true}`
+        if regossip != expectedgossip {
+                t.Errorf("regossip looks wrong!\n    %s", regossip)
+        }
+
+        // Verify regossip is valid.
+        decodedGossip, err := VerifyGossip(regossip)
+        if err != nil {
+                t.Errorf("regossip failed verification!\nErr: %s.\nregossip: %s\ndecoded gossip: %v", err, regossip, decodedGossip)
+        }
+
+        // regossip should be empty for already ReGossiped gossip.
+        regossip = ReGossip(fresherGossip, expectedgossip)
+        if regossip != `` {
+                t.Errorf("regossip looks wrong!\n    %s", regossip)
+        }
+
+        // gregossip should be empty there is no fresherGossip is empty.
+        fresherGossip = ``
+        regossip = ReGossip(fresherGossip, gossip)
+        if regossip != `` {
+                t.Errorf("regossip looks wrong!\n    %s", regossip)
+        }
+}
+
+/*******************************************************************************
     Tests for file IO related functions.
 *******************************************************************************/
 
