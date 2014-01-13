@@ -6,8 +6,9 @@ Service discovery a.k.a. directory services a.k.a LDAP-y.
 
 Go Get:
 ```
-  cd ~
-  go get github.com/eliwjones/seer
+	cd ~
+	go get github.com/eliwjones/seer
+	go get code.google.com/p/go.net/ipv4
 ```
 
 Start initial node:
@@ -27,10 +28,10 @@ Start peers:
 
 Verify peers are aware (result of each of these commands should be "5"):
 ```
-  curl -s http://127.0.0.1:10000/service/Seer | awk -F'},{' '{print NF}'
-  curl -s http://127.0.0.1:10001/service/Seer | awk -F'},{' '{print NF}'
-  curl -s http://127.0.0.1:10002/service/Seer | awk -F'},{' '{print NF}'
-  curl -s http://127.0.0.1:10003/service/Seer | awk -F'},{' '{print NF}'
-  curl -s http://127.0.0.1:10004/service/Seer | awk -F'},{' '{print NF}'
+	curl -s http://127.0.0.1:10000/service/Seer | awk -F'},{' '{print NF}'
+	curl -s http://127.0.0.1:10001/service/Seer | awk -F'},{' '{print NF}'
+	curl -s http://127.0.0.1:10002/service/Seer | awk -F'},{' '{print NF}'
+	curl -s http://127.0.0.1:10003/service/Seer | awk -F'},{' '{print NF}'
+	curl -s http://127.0.0.1:10004/service/Seer | awk -F'},{' '{print NF}'
 ```
 
