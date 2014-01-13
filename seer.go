@@ -136,7 +136,7 @@ func main() {
 
         go UpdateSeerNearness()
         go UDPServer(*hostIP, *udpPort)
-        go ServiceServer(tcpAddress)
+        go ServiceServer(":" + *tcpPort)
 
         /*
            Not really sure how want to build this out.
@@ -676,7 +676,6 @@ func ReGossip(fresherGossip string, gossip string) string {
         return regossip
 }
 
-
 func LazyWriteFile(folderName string, fileName string, data []byte) error {
         err := ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
         if err != nil {
@@ -767,6 +766,11 @@ func errorResponse(w http.ResponseWriter, message string) {
 }
 
 func ServiceHandler(w http.ResponseWriter, r *http.Request) {
+        if !(strings.HasPrefix(r.Host, "127.0.0.1") || strings.HasPrefix(r.Host, *hostIP)) {
+                // Only handle requests sent to hostIP or localhost.
+                return
+        }
+
         requestTypeMap := map[string]string{
                 "host":              "host",
                 "seer":              "host",
@@ -810,23 +814,55 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
                 }
                 fmt.Fprintf(w, jsonPayload)
         case "PUT":
-                if splitURL[1] != "seed" {
-                        errorResponse(w, "I only accept PUTs for 'seed'")
-                }
-                path := fmt.Sprintf("/tmp/seer_received_seed_%s_%d.tar.gz", udpAddress, MS(time.Now()))
-                file, err := os.Create(path)
-                if err != nil {
-                        errorResponse(w, err.Error())
+                if splitURL[1] == "seed" {
+                        path := fmt.Sprintf("/tmp/seer_received_seed_%s_%d.tar.gz", udpAddress, MS(time.Now()))
+                        file, err := os.Create(path)
+                        if err != nil {
+                                errorResponse(w, err.Error())
+                                return
+                        }
+                        defer file.Close()
+                        _, err = io.Copy(file, r.Body)
+                        if err != nil {
+                                errorResponse(w, err.Error())
+                                return
+                        }
+                        /* Made it here.. now need to do go routine to unzip. */
+                        go processSeed(path)
+                } else if splitURL[1] == "service" {
+                        if !(strings.HasPrefix(r.Host, "127.0.0.1")) {
+                                // Service updates only accepted on localhost.
+                                return
+                        }
+                        b := bytes.NewBuffer(nil)
+                        _, err := io.Copy(b, r.Body)
+                        gossip := b.String()
+
+                        decodedGossip, _ := VerifyGossip(gossip)
+                        decodedGossip.TS = MS(Now())
+                        decodedGossip.SeerAddr = udpAddress
+                        if !strings.HasPrefix(decodedGossip.ServiceAddr, *hostIP) {
+                                // For the sake of K.I.S.S., reject services that don't run on my defined hostIP?
+                                // What if there are other public IPs?
+                                // Is the iron fist right in this context?
+                                errorResponse(w, "'ServiceAddr' in JSON payload must match Seer IP (whatever was passed in with --ip=W.X.Y.Z).")
+                                return
+                        }
+                        if decodedGossip.ServiceName == "" {
+                                errorResponse(w, "Please include 'ServiceName' in JSON payload.")
+                                return
+                        }
+                        marshaledGossip, err := json.Marshal(decodedGossip)
+                        if err != nil {
+                                errorResponse(w, fmt.Sprintf("Something broke during json.Marshal. Err: %s, marshaledGossip: %v", err, string(marshaledGossip)))
+                                return
+                        }
+
+                        ProcessGossip(string(marshaledGossip), *hostIP, *hostIP)
+                } else {
+                        errorResponse(w, "I only accept PUTs for 'seed' or 'service")
                         return
                 }
-                defer file.Close()
-                _, err = io.Copy(file, r.Body)
-                if err != nil {
-                        errorResponse(w, err.Error())
-                        return
-                }
-                /* Made it here.. now need to do go routine to unzip. */
-                go processSeed(path)
         }
 }
 
@@ -989,7 +1025,7 @@ func processSeed(targzpath string) {
                 fullpath := SeerDirs["data"] + "/" + hdr.Name
                 filename, dir := GetFilenameAndDir(fullpath)
                 err = LazyWriteFile(dir, filename, buf.Bytes())
-             
+
                 if err != nil {
                         fmt.Printf("[processSeed] ERRR: %s", err)
                 }

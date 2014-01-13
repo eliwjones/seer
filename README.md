@@ -35,3 +35,12 @@ Verify peers are aware (result of each of these commands should be "5"):
 	$ curl -s http://127.0.0.1:10004/service/Seer | awk -F'},{' '{print NF}'
 ```
 
+Add a new service:
+```
+	$ curl -X PUT -H "Content-Type: application/json" -d '{"ServiceName":"catpics","ServiceAddr":"127.0.0.1:12345"}' http://127.0.0.1:10004/service
+```
+
+Ask a node about this new service:
+```
+	$ curl http://127.0.0.1:10001/service/catpics
+```
