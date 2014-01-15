@@ -28,11 +28,7 @@ Start peers:
 
 Verify peers are aware (result of each of these commands should be "5"):
 ```
-	$ curl -s http://127.0.0.1:10000/service/Seer | awk -F'},{' '{print NF}'
-	$ curl -s http://127.0.0.1:10001/service/Seer | awk -F'},{' '{print NF}'
-	$ curl -s http://127.0.0.1:10002/service/Seer | awk -F'},{' '{print NF}'
-	$ curl -s http://127.0.0.1:10003/service/Seer | awk -F'},{' '{print NF}'
-	$ curl -s http://127.0.0.1:10004/service/Seer | awk -F'},{' '{print NF}'
+	$ for i in {0..4}; do curl -s http://127.0.0.1:1000$i/service/Seer | awk -F'},{' '{print NF}'; done;
 ```
 
 Add a new service:
