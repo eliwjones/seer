@@ -3,6 +3,7 @@
 package main
 
 import (
+        "flag"
         "fmt"
         "math"
         "math/rand"
@@ -28,23 +29,29 @@ type Gossip struct {
 var (
         totalCounterChannel  chan int
         uniqueCounterChannel chan int
+        gossipeeCount        int
+        gossipCount          int
+        uniqueGossipCount    int
+        current_func         string
 
-        doneChannel       = make(chan bool, 10)
-        node_map          = map[string]map[string]Gossip{}
-        node_channels     = map[int]chan ChannelMessage{}
-        GossipFunc        = map[string]func(string, Gossip){}
-        current_func      = ""
-        bounceLimit       = 0
-        pathLimit         = 0
-        nodeCount         = 0
-        gossipeeCount     = 0
-        gossipCount       = 0
-        uniqueGossipCount = 0
+        doneChannel   = make(chan bool, 10)
+        node_map      = map[string]map[string]Gossip{}
+        node_channels = map[int]chan ChannelMessage{}
+        GossipFunc    = map[string]func(string, Gossip){}
+
+        // Flag Vars
+        nodeCount   int
+        pathLimit   int
+        bounceLimit int
 )
 
 func init() {
-        // Init mapped GossipGossip funcs here since there does not appear to be a sexy way.
+        // Bind to flags if they are passed.
+        flag.IntVar(&nodeCount, "nodecount", 500, "How many nodes are there?")
+        flag.IntVar(&pathLimit, "pathlimit", 7, "How many nodes can a gossip message pass through?")
+        flag.IntVar(&bounceLimit, "bouncelimit", 0, "How many times can an 'old' gossip message be bounced around?")
 
+        // Init mapped GossipGossip funcs here since there does not appear to be a sexy way.
         GossipFunc["GossipGossip1"] = func(node_key string, gossip Gossip) {
                 if gossip.Bounce > bounceLimit {
                         return
@@ -103,20 +110,19 @@ func main() {
         rand.Seed(time.Now().UTC().UnixNano())
         runtime.GOMAXPROCS(runtime.NumCPU())
 
-        pathLimit = 7
-        bounceLimit = 0
-        nodeCount = 500
+        flag.Parse()
+
         gossipeeCount = int(math.Log2(float64(nodeCount)))
 
         initChannels(10, nodeCount)
         test_gossip := Gossip{Key: "test_key", TS: int64(99)}
-        
+
         for fnName, _ := range GossipFunc {
                 current_func = fnName
 
                 initNodes(nodeCount)
                 initCounters()
-                
+
                 // Percolate update gossip.
                 SendGossip("node_0", test_gossip)
                 loops := 0
