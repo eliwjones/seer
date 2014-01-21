@@ -43,7 +43,7 @@ var (
 )
 
 func init() {
-        // Init mapped GossipGossip funcs here since can't figure out to assign to map on outside.
+        // Init mapped GossipGossip funcs here since there does not appear to be a sexy way.
 
         GossipFunc["GossipGossip1"] = func(node_key string, gossip Gossip) {
                 if gossip.Bounce > bounceLimit {
