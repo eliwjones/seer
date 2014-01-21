@@ -15,6 +15,10 @@ import (
         "time"
 )
 
+var (
+        NastyGlobal = map[string]string{}
+)
+
 /*******************************************************************************
     Test Helpers.
 *******************************************************************************/
@@ -125,6 +129,37 @@ func setsEqual(arrayOne []string, arrayTwo []string) bool {
                 }
         }
         return true
+}
+
+/*******************************************************************************
+    Tests for ??.
+*******************************************************************************/
+
+func Test_BootStrap(t *testing.T) {
+        NastyGlobal = map[string]string{}
+        // Nasty mocking!!
+        SendGossip = func(message string, seeder string) {
+                NastyGlobal["message"] = message
+                NastyGlobal["seeder"] = seeder
+        }
+        
+        seeder := "magic"
+        BootStrap(seeder, tcpAddress)
+        expectedMessage := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, udpAddress)
+        expectedSeeder := fmt.Sprintf("255.255.255.255:%s", *udpPort)
+        if NastyGlobal["message"] != expectedMessage ||
+                NastyGlobal["seeder"] != expectedSeeder {
+                t.Errorf("BROKE! seeder: %s\nmessage: %s\nexpected: %s, %s", NastyGlobal["seeder"], NastyGlobal["message"], expectedMessage, expectedSeeder)
+        }
+
+        seeder = "1.1.1.1.1:9999"
+        BootStrap(seeder, tcpAddress)
+        expectedMessage = fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, tcpAddress)
+        expectedSeeder = seeder
+        if NastyGlobal["message"] != expectedMessage ||
+                NastyGlobal["seeder"] != expectedSeeder {
+                t.Errorf("BROKE! seeder: %s\nmessage: %s\nexpected: %s, %s", NastyGlobal["seeder"], NastyGlobal["message"], expectedMessage, expectedSeeder)
+        }
 }
 
 /*******************************************************************************

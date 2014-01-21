@@ -204,7 +204,7 @@ func createGossipSocket() {
         gossipSocket = c.(*net.UDPConn)
 }
 
-func SendGossip(gossip string, seerAddr string) {
+var SendGossip = func (gossip string, seerAddr string) {
         seer, err := net.ResolveUDPAddr("udp4", seerAddr)
         if err != nil {
                 fmt.Printf("[SendGossip] ERR: %s\n", err)
@@ -255,7 +255,7 @@ func BootStrap(seeder string, seedee string) {
         /* Sexier */
         if seeder == "magic" {
                 /* Broadcast to whoever.  Must still handle handshake so that not all Seers send their data. */
-                seeder = "255.255.255.255:9999"
+                seeder = fmt.Sprintf("255.255.255.255:%s", *udpPort)
         }
         if strings.HasPrefix(seeder, "255.") {
                 /* If Broadcasting, must send udpAddress so they can send back "SeedYou" query. */
