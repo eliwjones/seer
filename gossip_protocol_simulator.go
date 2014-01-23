@@ -67,6 +67,7 @@ func init() {
         }
         
         GossipFunc["GossipGossip1"] = func(node_key string, gossip Gossip) {
+                gossip.Path = append(gossip.Path, ExtractNodeIDX(node_key))
                 if gossip.Bounce > bounceLimit {
                         return
                 }
@@ -94,6 +95,7 @@ func init() {
         }
 
         GossipFunc["GossipGossip2"] = func(node_key string, gossip Gossip) {
+                gossip.Path = append(gossip.Path, ExtractNodeIDX(node_key))
                 if gossip.Bounce > bounceLimit {
                         return
                 }
@@ -161,7 +163,6 @@ func ProcessGossip(node_key string, gossip Gossip) {
         } else {
                 gossip.Bounce += 1
         }
-        gossip.Path = append(gossip.Path, ExtractNodeIDX(node_key))
         GossipFunc[current_func](node_key, gossip)
 }
 
