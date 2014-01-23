@@ -27,11 +27,13 @@ type Gossip struct {
 }
 
 var (
-        totalCounterChannel  chan int
-        uniqueCounterChannel chan int
-        gossipCount          int
-        uniqueGossipCount    int
-        current_func         string
+        totalCounterChannel    chan int
+        receivedCounterChannel chan int
+        uniqueCounterChannel   chan int
+        gossipCount            int
+        gossipReceivedCount    int
+        uniqueGossipCount      int
+        current_func           string
 
         doneChannel   = make(chan bool, 10)
         node_map      = map[string]map[string]Gossip{}
@@ -54,6 +56,7 @@ func init() {
 
         // Init mapped GossipGossip funcs here since there does not appear to be a sexy way.
         GossipFunc["GossipGossip0"] = func(node_key string, gossip Gossip) {
+                gossip.Path = append(gossip.Path, ExtractNodeIDX(node_key))
                 if gossip.Bounce > bounceLimit {
                         return
                 }
@@ -65,7 +68,7 @@ func init() {
                         SendGossip(dest_node_key, gossip)
                 }
         }
-        
+
         GossipFunc["GossipGossip1"] = func(node_key string, gossip Gossip) {
                 gossip.Path = append(gossip.Path, ExtractNodeIDX(node_key))
                 if gossip.Bounce > bounceLimit {
@@ -89,8 +92,8 @@ func init() {
                                         }
                                 }
                         }
-                        next_node_key := fmt.Sprintf("node_%d", idx)
-                        SendGossip(next_node_key, gossip)
+                        dest_node_key := fmt.Sprintf("node_%d", idx)
+                        SendGossip(dest_node_key, gossip)
                 }
         }
 
@@ -120,6 +123,39 @@ func init() {
                         }
                 }
         }
+
+        GossipFunc["GossipGossip3"] = func(node_key string, gossip Gossip) {
+                if gossip.Bounce > bounceLimit {
+                        return
+                }
+                // Manually inflating pathLimit since this func explodes path size.
+                if len(gossip.Path) > pathLimit*gossipeeCount {
+                        return
+                }
+                // Choose random hosts to gossip to.
+                // But, build total seerpath of all peers sending to before sending any.
+                gossipees := make([]int64, 0, gossipeeCount)
+                for i := 0; i < gossipeeCount; i++ {
+                        //Choose idx.  SendGossip.
+                        ready := false
+                        idx := int64(0)
+                        for !ready {
+                                ready = true
+                                idx = int64(rand.Intn(len(node_map)))
+                                for _, val := range gossip.Path {
+                                        if idx == val {
+                                                ready = false
+                                        }
+                                }
+                        }
+                        gossip.Path = append(gossip.Path, idx)
+                        gossipees = append(gossipees, idx)
+                }
+                for _, node_idx := range gossipees {
+                        destination_node_key := fmt.Sprintf("node_%d", node_idx)
+                        SendGossip(destination_node_key, gossip)
+                }
+        }
 }
 
 func main() {
@@ -145,7 +181,7 @@ func main() {
                         case <-doneChannel:
                                 goto calculate
                         case <-time.After(time.Duration(1) * time.Second):
-                                if uniqueGossipCount > int(0.9*float64(nodeCount)) || loops > 10 {
+                                if uniqueGossipCount > int(0.99*float64(nodeCount)) || loops > 3 {
                                         goto calculate
                                 }
                                 loops += 1
@@ -178,6 +214,7 @@ func ReceiveGossip(node_modulus int) {
         for {
                 select {
                 case channel_message := <-node_channels[node_modulus]:
+                        receivedCounterChannel <- 1
                         ProcessGossip(channel_message.Destination, channel_message.Message)
                 }
         }
@@ -199,6 +236,7 @@ func initNodes(nodeCount int) {
 
 func initCounters() {
         gossipCount = 0
+        gossipReceivedCount = 0
         uniqueGossipCount = 0
 }
 
@@ -210,6 +248,7 @@ func initChannels(channelCount int, nodeCount int) {
                 go ReceiveGossip(i)
         }
         totalCounterChannel = make(chan int, 1000)
+        receivedCounterChannel = make(chan int, 1000)
         uniqueCounterChannel = make(chan int, 1000)
         go gossipCounter()
 }
@@ -219,11 +258,13 @@ func gossipCounter() {
                 select {
                 case <-totalCounterChannel:
                         gossipCount += 1
+                case <-receivedCounterChannel:
+                        gossipReceivedCount += 1
                 case <-uniqueCounterChannel:
                         uniqueGossipCount += 1
-                        if uniqueGossipCount == nodeCount {
-                                doneChannel <- true
-                        }
+                }
+                if uniqueGossipCount >= nodeCount && gossipCount == gossipReceivedCount {
+                        doneChannel <- true
                 }
         }
 }
