@@ -29,7 +29,6 @@ type Gossip struct {
 var (
         totalCounterChannel  chan int
         uniqueCounterChannel chan int
-        gossipeeCount        int
         gossipCount          int
         uniqueGossipCount    int
         current_func         string
@@ -40,14 +39,16 @@ var (
         GossipFunc    = map[string]func(string, Gossip){}
 
         // Flag Vars
-        nodeCount   int
-        pathLimit   int
-        bounceLimit int
+        nodeCount     int
+        pathLimit     int
+        bounceLimit   int
+        gossipeeCount int
 )
 
 func init() {
         // Bind to flags if they are passed.
         flag.IntVar(&nodeCount, "nodecount", 500, "How many nodes are there?")
+        flag.IntVar(&gossipeeCount, "gossipeecount", int(math.Log2(float64(nodeCount))), "How many nodes should gossiper gossip with?")
         flag.IntVar(&pathLimit, "pathlimit", 7, "How many nodes can a gossip message pass through?")
         flag.IntVar(&bounceLimit, "bouncelimit", 0, "How many times can an 'old' gossip message be bounced around?")
 
@@ -111,8 +112,6 @@ func main() {
         runtime.GOMAXPROCS(runtime.NumCPU())
 
         flag.Parse()
-
-        gossipeeCount = int(math.Log2(float64(nodeCount)))
 
         initChannels(10, nodeCount)
         test_gossip := Gossip{Key: "test_key", TS: int64(99)}
