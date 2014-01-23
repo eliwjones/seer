@@ -30,6 +30,7 @@ var (
         sentCounterChannel     chan int
         receivedCounterChannel chan int
         uniqueCounterChannel   chan int
+        counterQuitChannel     chan bool
         gossipSentCount        int
         gossipReceivedCount    int
         uniqueGossipCount      int
@@ -164,12 +165,12 @@ func main() {
 
         flag.Parse()
 
-        initChannels(10, nodeCount)
         test_gossip := Gossip{Key: "test_key", TS: int64(99)}
 
         for fnName, _ := range GossipFunc {
                 current_func = fnName
 
+                initChannels(10, nodeCount)
                 initNodes(nodeCount)
                 initCounters()
 
@@ -181,13 +182,18 @@ func main() {
                         case <-doneChannel:
                                 goto calculate
                         case <-time.After(time.Duration(1) * time.Second):
-                                if uniqueGossipCount > int(0.99*float64(nodeCount)) || loops > 3 {
+                                if uniqueGossipCount > int(0.97*float64(nodeCount)) || loops > 3 {
                                         goto calculate
                                 }
                                 loops += 1
                         }
                 }
         calculate:
+                // Want to send "quit" directive to go routines.
+                for _, node_channel := range node_channels {
+                        node_channel <- ChannelMessage{Destination: "quit"}
+                }
+                counterQuitChannel <- true
                 calculateStats(test_gossip)
         }
 }
@@ -214,6 +220,9 @@ func ReceiveGossip(node_modulus int) {
         for {
                 select {
                 case channel_message := <-node_channels[node_modulus]:
+                        if channel_message.Destination == "quit" {
+                                return
+                        }
                         receivedCounterChannel <- 1
                         ProcessGossip(channel_message.Destination, channel_message.Message)
                 }
@@ -250,6 +259,7 @@ func initChannels(channelCount int, nodeCount int) {
         sentCounterChannel = make(chan int, 1000)
         receivedCounterChannel = make(chan int, 1000)
         uniqueCounterChannel = make(chan int, 1000)
+        counterQuitChannel = make(chan bool, 10)
         go gossipCounter()
 }
 
@@ -262,6 +272,8 @@ func gossipCounter() {
                         gossipReceivedCount += 1
                 case <-uniqueCounterChannel:
                         uniqueGossipCount += 1
+                case <-counterQuitChannel:
+                        return
                 }
                 if uniqueGossipCount >= nodeCount && gossipSentCount == gossipReceivedCount {
                         doneChannel <- true
