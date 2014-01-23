@@ -27,10 +27,10 @@ type Gossip struct {
 }
 
 var (
-        totalCounterChannel    chan int
+        sentCounterChannel     chan int
         receivedCounterChannel chan int
         uniqueCounterChannel   chan int
-        gossipCount            int
+        gossipSentCount        int
         gossipReceivedCount    int
         uniqueGossipCount      int
         current_func           string
@@ -204,7 +204,7 @@ func ProcessGossip(node_key string, gossip Gossip) {
 
 func SendGossip(node_key string, gossip Gossip) {
         // send Gossip down node_channels[node_key]
-        totalCounterChannel <- 1
+        sentCounterChannel <- 1
         node_modulus := int(ExtractNodeIDX(node_key)) % len(node_channels)
         node_channels[node_modulus] <- ChannelMessage{Destination: node_key, Message: gossip}
 }
@@ -235,7 +235,7 @@ func initNodes(nodeCount int) {
 }
 
 func initCounters() {
-        gossipCount = 0
+        gossipSentCount = 0
         gossipReceivedCount = 0
         uniqueGossipCount = 0
 }
@@ -247,7 +247,7 @@ func initChannels(channelCount int, nodeCount int) {
                 node_channels[i] = make(chan ChannelMessage, 20*int(nodeCount/channelCount))
                 go ReceiveGossip(i)
         }
-        totalCounterChannel = make(chan int, 1000)
+        sentCounterChannel = make(chan int, 1000)
         receivedCounterChannel = make(chan int, 1000)
         uniqueCounterChannel = make(chan int, 1000)
         go gossipCounter()
@@ -256,14 +256,14 @@ func initChannels(channelCount int, nodeCount int) {
 func gossipCounter() {
         for {
                 select {
-                case <-totalCounterChannel:
-                        gossipCount += 1
+                case <-sentCounterChannel:
+                        gossipSentCount += 1
                 case <-receivedCounterChannel:
                         gossipReceivedCount += 1
                 case <-uniqueCounterChannel:
                         uniqueGossipCount += 1
                 }
-                if uniqueGossipCount >= nodeCount && gossipCount == gossipReceivedCount {
+                if uniqueGossipCount >= nodeCount && gossipSentCount == gossipReceivedCount {
                         doneChannel <- true
                 }
         }
@@ -290,7 +290,7 @@ func calculateStats(test_gossip Gossip) {
         fmt.Printf("Max Path Length: %d\n", path_lens[len(path_lens)-1])
         fmt.Printf("Med Path Length: %d\n", path_lens[int(len(path_lens)/2)])
         fmt.Printf("Missing Updates: %d\n", missing_updates)
-        fmt.Printf("Total Gossip: %d\n", gossipCount)
+        fmt.Printf("Total Gossip: %d\n", gossipSentCount)
         fmt.Printf("Unique Gossip: %d\n", uniqueGossipCount)
-        fmt.Printf("Multiplier: %d\n", gossipCount/nodeCount)
+        fmt.Printf("Multiplier: %d\n", gossipSentCount/nodeCount)
 }
