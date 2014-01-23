@@ -53,6 +53,19 @@ func init() {
         flag.IntVar(&bounceLimit, "bouncelimit", 0, "How many times can an 'old' gossip message be bounced around?")
 
         // Init mapped GossipGossip funcs here since there does not appear to be a sexy way.
+        GossipFunc["GossipGossip0"] = func(node_key string, gossip Gossip) {
+                if gossip.Bounce > bounceLimit {
+                        return
+                }
+                // Choose random hosts to gossip to.
+                for i := 0; i < gossipeeCount; i++ {
+                        //Choose idx.  SendGossip.
+                        idx := int64(rand.Intn(len(node_map)))
+                        dest_node_key := fmt.Sprintf("node_%d", idx)
+                        SendGossip(dest_node_key, gossip)
+                }
+        }
+        
         GossipFunc["GossipGossip1"] = func(node_key string, gossip Gossip) {
                 if gossip.Bounce > bounceLimit {
                         return
