@@ -46,6 +46,7 @@ var (
         pathLimit     int
         bounceLimit   int
         gossipeeCount int
+        messageLoss   int
 )
 
 func init() {
@@ -54,6 +55,7 @@ func init() {
         flag.IntVar(&gossipeeCount, "gossipeecount", int(math.Log2(float64(nodeCount))), "How many nodes should gossiper gossip with?")
         flag.IntVar(&pathLimit, "pathlimit", 7, "How many nodes can a gossip message pass through?")
         flag.IntVar(&bounceLimit, "bouncelimit", 0, "How many times can an 'old' gossip message be bounced around?")
+        flag.IntVar(&messageLoss, "messageloss", 0, "How many messages out of 100 will be lost?")
 
         // Init mapped GossipGossip funcs here since there does not appear to be a sexy way.
         GossipFunc["GossipGossip0"] = func(node_key string, gossip Gossip) {
@@ -175,7 +177,7 @@ func main() {
                 initCounters()
 
                 // Percolate update gossip.
-                SendGossip("node_0", test_gossip)
+                GossipFunc[current_func]("node_0", test_gossip)
                 loops := 0
                 for {
                         select {
@@ -211,6 +213,10 @@ func ProcessGossip(node_key string, gossip Gossip) {
 func SendGossip(node_key string, gossip Gossip) {
         // send Gossip down node_channels[node_key]
         sentCounterChannel <- 1
+        // Simulate messageloss if set.
+        if messageLoss > 0 && rand.Intn(100) < messageLoss {
+                return
+        }
         node_modulus := int(ExtractNodeIDX(node_key)) % len(node_channels)
         node_channels[node_modulus] <- ChannelMessage{Destination: node_key, Message: gossip}
 }
