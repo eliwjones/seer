@@ -40,3 +40,36 @@ Ask a node about this new service:
 ```
 	$ curl http://127.0.0.1:10001/service/catpics
 ```
+
+# Protocol Simulator
+
+To run default simulation (nodecount 500, gossipeecount 8, pathlimit 7, bouncelimit 0):
+```
+  $  go run go/src/github.com/eliwjones/seer/gossip_protocol_simulator.go
+```
+
+"GossipGossip0" is a naive gossip method.  When a node receives new gossip, it picks a number (gossipeecount) of random nodes and blindly sends the gossip to them.
+
+"GossipGossip1" attempts to avoid sending gossip back to hosts that have already seen it.
+
+One thing the protocol simulator already shows is that:
+
+In an idealized setting, there is no difference between these methods (when it comes to gossip coverage or redundant gossip counts).  This implies that tracking the gossip path will mainly be useful for inferring network topology.
+
+
+To run a protocol simulation with a smaller gossipeecount:
+```
+  $ go run go/src/github.com/eliwjones/seer/gossip_protocol_simulator.go --gossipeecount=4
+```
+
+This shows you that you can drop the multiplier (or redundancy) from ~7-8 to ~3-4 while still getting around 97%-98% coverage (under ideal network circumstances).
+
+
+Now, if you add messageloss of 33%:
+```
+  $ go run go/src/github.com/eliwjones/seer/gossip_protocol_simulator.go --gossipeecount=4 --messageloss=33
+  $ go run go/src/github.com/eliwjones/seer/gossip_protocol_simulator.go --messageloss=33
+```
+
+For the naive method, you get about 90%-93% coverage with gossipeecount=4 and 98.8%-99.4% coverage using the default gossipeecount=8.  So, it helps to know what mix of redundancy and coverage you want or are willing to accept.
+
