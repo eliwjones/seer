@@ -2,6 +2,7 @@ package main
 
 import (
         "code.google.com/p/go.net/ipv4"
+        "code.google.com/p/go.net/ipv6"
 
         "archive/tar"
         "bytes"
@@ -49,6 +50,7 @@ var (
         uniqueGossipCount int
 
         /* Defined variables go here. */
+        isIPv6          = false
         BoolChannels    = map[string]chan bool{}
         SeerDirs        = map[string]string{}
         neighborhood    = -1
@@ -56,7 +58,7 @@ var (
         seerNearness    = map[string]int{}
         whitelist       = map[string]bool{}
         tsRegexp        = regexp.MustCompile(`(,?\s*)("TS"\s*:\s*)(\d+)(\s*[,|}])`)
-        seerPathRegexp  = regexp.MustCompile(`(\s*)("SeerPath"\s*:\s*\[)(.+?)(\]\s*)`)
+        seerPathRegexp  = regexp.MustCompile(`(\s*)("SeerPath"\s*:\s*\[)(.+?)(\]\s*)([,|}])`)
         tombstoneRegexp = regexp.MustCompile(`(\s*)("Tombstone"\s*:\s*)(true)(\s*)`)
 
         /* Flags go here */
@@ -81,15 +83,25 @@ func init() {
         flag.Parse()
 
         if *hostIP == "" {
-                fmt.Printf("Please pass -ip=W.X.Y.Z\n")
+                fmt.Printf("Please pass -ip=W.X.Y.Z or -ip=W:X:Y:Z (for ipv6)\n")
                 os.Exit(1)
+        }
+        ipParts := strings.Split(*hostIP, ".")
+        ip6Parts := strings.Split(*hostIP, ":")
+        if (len(ipParts) != 4 && len(ip6Parts) == 1) ||
+                (len(ip6Parts) > 1 && len(ipParts) > 1) {
+                fmt.Printf("Please pass -ip=W.X.Y.Z or -ip=W:X:Y:Z (for ipv6)\nI received: %v\n", *hostIP)
+                os.Exit(1)
+        } else if len(ip6Parts) > 1 {
+                isIPv6 = true
+                if !strings.HasPrefix(*hostIP, "[") {
+                        *hostIP = "[" + *hostIP
+                }
+                if !strings.HasSuffix(*hostIP, "]") {
+                        *hostIP = *hostIP + "]"
+                }
         }
 
-        ipParts := strings.Split(*hostIP, ".")
-        if len(ipParts) != 4 {
-                fmt.Printf("Please pass -ip=W.X.Y.Z\nI received: %v\n", ipParts)
-                os.Exit(1)
-        }
         if *neighborhoods > -1 {
                 var err error
                 neighborhood, _, err = GetNeighborhoodAndSeerIP(*hostIP, *neighborhoods)
@@ -127,9 +139,6 @@ func init() {
 }
 
 func main() {
-        signaler := make(chan os.Signal, 1)
-        signal.Notify(signaler, os.Interrupt, os.Kill)
-
         /* Single cleanup on start. */
         //TombstoneReaper()
         //AntiEntropy()
@@ -174,6 +183,10 @@ func main() {
                 /* If bootstrapping, might want to wait for seed before doing this. */
                 RaiseServicesFromTheDead(udpAddress)
         }
+
+        signaler := make(chan os.Signal, 1)
+        signal.Notify(signaler, os.Interrupt, os.Kill)
+
         for {
                 select {
                 case <-BoolChannels["gossipCounter"]:
@@ -204,7 +217,7 @@ func createGossipSocket() {
         gossipSocket = c.(*net.UDPConn)
 }
 
-var SendGossip = func (gossip string, seerAddr string) {
+var SendGossip = func(gossip string, seerAddr string) {
         seer, err := net.ResolveUDPAddr("udp", seerAddr)
         if err != nil {
                 fmt.Printf("[SendGossip] ERR: %s\n", err)
@@ -280,7 +293,7 @@ func FreshGossip(filePath string, newTS int64) (bool, string) {
 
 func ExtractSeerPathFromJSON(gossip string, trimquotes bool) (string, error) {
         seerPath := seerPathRegexp.FindStringSubmatch(gossip)
-        if len(seerPath) == 5 {
+        if len(seerPath) == 6 {
                 if trimquotes {
                         seerPath[3] = strings.Replace(seerPath[3], `"`, ``, -1)
                 }
@@ -291,21 +304,21 @@ func ExtractSeerPathFromJSON(gossip string, trimquotes bool) (string, error) {
 
 func UpdateSeerPath(gossip string, newpathitems string) string {
         if newpathitems != "" {
-                gossip = seerPathRegexp.ReplaceAllString(gossip, `${1}${2}`+newpathitems+`,${3}${4}`)
+                gossip = seerPathRegexp.ReplaceAllString(gossip, `${1}${2}`+newpathitems+`,${3}${4}${5}`)
         }
         return gossip
 }
 
 func ReplaceSeerPath(gossip string, newpathitems string) string {
         if newpathitems != "" {
-                gossip = seerPathRegexp.ReplaceAllString(gossip, `${1}${2}`+newpathitems+`${4}`)
+                gossip = seerPathRegexp.ReplaceAllString(gossip, `${1}${2}`+newpathitems+`${4}${5}`)
         }
         return gossip
 }
 
 func RemoveSeerPath(gossip string) string {
         /* Guess this remove can be slow since happens infrequently. */
-        gossip = seerPathRegexp.ReplaceAllString(gossip, ``)
+        gossip = seerPathRegexp.ReplaceAllString(gossip, `${5}`)
         for _, replaceme := range []string{`{,`, `,,`, `,}`} {
                 with := strings.Replace(replaceme, `,`, ``, 1)
                 gossip = strings.Replace(gossip, replaceme, with, 1)
@@ -720,11 +733,20 @@ func UDPServer(ipAddress string, port string) {
                 c, err = net.ListenPacket("udp", udpAddress)
         }
         if err != nil {
+                fmt.Printf("ListenPacket failed! %v, udpAddress: %s\n", err, udpAddress)
                 log.Fatal(err)
         }
         defer c.Close()
+        if isIPv6 {
+                UDP6Listen(c)
+        } else {
+                UDP4Listen(c)
+        }
+}
+
+func UDP4Listen(c net.PacketConn) {
         udpLn := ipv4.NewPacketConn(c)
-        err = udpLn.SetControlMessage(ipv4.FlagDst, true)
+        err := udpLn.SetControlMessage(ipv4.FlagDst, true)
         if err != nil {
                 log.Fatal(err)
         }
@@ -736,7 +758,33 @@ func UDPServer(ipAddress string, port string) {
                 if err != nil {
                         log.Fatal(err)
                 }
-                if cm.Dst.String() == *hostIP || strings.HasPrefix(cm.Dst.String(), "255.") {
+                if cm.Dst.String() == *hostIP || "["+cm.Dst.String()+"]" == *hostIP || strings.HasPrefix(cm.Dst.String(), "255.") {
+                        /* Only process broadcast traffic OR traffic destined for me. */
+                        /* Only necessary when listenbroadcast=true */
+                        message := strings.Trim(string(udpBuff[:n]), "\n")
+                        if message == "exit" {
+                                return
+                        }
+                        go ProcessGossip(message, cm.Src.String(), cm.Dst.String())
+                }
+        }
+}
+
+func UDP6Listen(c net.PacketConn) {
+        udpLn := ipv6.NewPacketConn(c)
+        err := udpLn.SetControlMessage(ipv6.FlagDst, true)
+        if err != nil {
+                log.Fatal(err)
+        }
+        /* Assuming that MTU can't be below 576, which implies one has 508 bytes for payload after overhead. */
+        udpBuff := make([]byte, 508)
+        BoolChannels["seerReady"] <- true
+        for {
+                n, cm, _, err := udpLn.ReadFrom(udpBuff)
+                if err != nil {
+                        log.Fatal(err)
+                }
+                if cm.Dst.String() == *hostIP || "["+cm.Dst.String()+"]" == *hostIP || strings.HasPrefix(cm.Dst.String(), "255.") {
                         /* Only process broadcast traffic OR traffic destined for me. */
                         /* Only necessary when listenbroadcast=true */
                         message := strings.Trim(string(udpBuff[:n]), "\n")
@@ -766,7 +814,9 @@ func errorResponse(w http.ResponseWriter, message string) {
 }
 
 func ServiceHandler(w http.ResponseWriter, r *http.Request) {
-        if !(strings.HasPrefix(r.Host, "127.0.0.1") || strings.HasPrefix(r.Host, *hostIP)) {
+        if !(strings.HasPrefix(r.Host, "127.0.0.1") ||
+                strings.HasPrefix(r.Host, "[::1]") ||
+                strings.HasPrefix(r.Host, *hostIP)) {
                 // Only handle requests sent to hostIP or localhost.
                 return
         }
@@ -830,7 +880,8 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
                         /* Made it here.. now need to do go routine to unzip. */
                         go processSeed(path)
                 } else if splitURL[1] == "service" {
-                        if !(strings.HasPrefix(r.Host, "127.0.0.1")) {
+                        if !(strings.HasPrefix(r.Host, "127.0.0.1") ||
+                                strings.HasPrefix(r.Host, "[::1]")) {
                                 // Service updates only accepted on localhost.
                                 return
                         }

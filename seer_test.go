@@ -142,7 +142,7 @@ func Test_BootStrap(t *testing.T) {
                 NastyGlobal["message"] = message
                 NastyGlobal["seeder"] = seeder
         }
-        
+
         seeder := "magic"
         BootStrap(seeder, tcpAddress)
         expectedMessage := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, udpAddress)
@@ -289,7 +289,7 @@ func Test_getGossipArray(t *testing.T) {
 }
 
 func Test_sendSeed(t *testing.T) {
-        go ServiceServer(tcpAddress)
+        go ServiceServer(":" + *tcpPort)
         TS := MS(Now())
         filemap := map[string]string{
                 `host/2.2.2.2:2222/Seer`: fmt.Sprintf(`{"SeerAddr":"2.2.2.2:2222","TS":%d}`, TS),
@@ -410,6 +410,30 @@ func Test_processSeed(t *testing.T) {
 /*******************************************************************************
     Tests for Regex functions.
 *******************************************************************************/
+
+func Test_ExtractSeerPathFromJSON_ipv4(t *testing.T) {
+        seerPath := `"1.1.1.1:1111","2.2.2.2:2222"`
+        ts := int64(1111111111111)
+        constructedGossips := constructGossips(ts, seerPath, ``)
+        for _, gossip := range constructedGossips {
+                extractedSeerPath, _ := ExtractSeerPathFromJSON(gossip, false)
+                if extractedSeerPath != seerPath {
+                        t.Errorf("ExtractedSeerPath Mismatch! %s != %s!\n", extractedSeerPath, seerPath)
+                }
+        }
+}
+
+func Test_ExtractSeerPathFromJSON_ipv6(t *testing.T) {
+        seerPath := `"[1:1:1:1]:1111","[2:2:2:2]:2222"`
+        ts := int64(1111111111111)
+        constructedGossips := constructGossips(ts, seerPath, ``)
+        for _, gossip := range constructedGossips {
+                extractedSeerPath, _ := ExtractSeerPathFromJSON(gossip, false)
+                if extractedSeerPath != seerPath {
+                        t.Errorf("ExtractedSeerPath Mismatch! %s != %s!\n", extractedSeerPath, seerPath)
+                }
+        }
+}
 
 func Test_UpdateSeerPath(t *testing.T) {
         seerPath := `"1.1.1.1:1111","2.2.2.2:2222"`
