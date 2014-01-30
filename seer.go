@@ -196,7 +196,7 @@ func main() {
 }
 
 func createGossipSocket() {
-        c, err := net.ListenPacket("udp4", ":0")
+        c, err := net.ListenPacket("udp", ":0")
         if err != nil {
                 fmt.Printf("[createGossipSocket] ERR: %s\n", err)
                 os.Exit(1)
@@ -205,7 +205,7 @@ func createGossipSocket() {
 }
 
 var SendGossip = func (gossip string, seerAddr string) {
-        seer, err := net.ResolveUDPAddr("udp4", seerAddr)
+        seer, err := net.ResolveUDPAddr("udp", seerAddr)
         if err != nil {
                 fmt.Printf("[SendGossip] ERR: %s\n", err)
                 return
