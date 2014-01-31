@@ -166,6 +166,23 @@ func Test_BootStrap(t *testing.T) {
     Tests for basic gossip functions.
 *******************************************************************************/
 
+func Test_VerifyGossip(t *testing.T) {
+        constructedGossips := constructGossips(int64(111111111), ``, ``)
+        for _, gossip := range constructedGossips {
+                decodedGossip, err := VerifyGossip(gossip)
+                if err != nil {
+                        t.Errorf("Verify Failed! err: %v, decodedGossip: %v, gossip: %v\n", err, decodedGossip, gossip)
+                }
+        }
+
+        badGossip := fmt.Sprintf(`{"SeerAddr":10.10.10.10,"TS":%d,"SeerPath":["2.2.2.2:2222"]}`, MS(Now()))
+        decodedGossip, err := VerifyGossip(badGossip)
+        if err == nil {
+                t.Errorf("Bad Gossip Verified! err: %v, decodedGossip: %v, badGossip: %v\n", err, decodedGossip, badGossip)
+        }
+
+}
+
 func Test_ReGossip(t *testing.T) {
         fresherGossip := `{"SeerAddr":"1.1.1.1:1","TS":999999999,"SeerPath":["2.2.2.2:2222"]}`
         gossip := `{"SeerAddr":"1.1.1.1:1","TS":888888888,"SeerPath":["3.3.3.3:3333"]}`
