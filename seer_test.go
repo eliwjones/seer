@@ -436,7 +436,7 @@ func Test_ExtractSeerPathFromJSON_ipv6(t *testing.T) {
 }
 
 func Test_UpdateSeerPath(t *testing.T) {
-        seerPath := `"1.1.1.1:1111","2.2.2.2:2222"`
+        seerPath := `"1.1.1.1:1111","[2:2:2:2]:2222","4.4.4.4:4444"`
         newSeer := `"3.3.3.3:3333"`
         ts := int64(1111111111111)
         updatedGossips := constructGossips(ts, seerPath, ``)
@@ -453,7 +453,7 @@ func Test_UpdateSeerPath(t *testing.T) {
 }
 
 func Test_ReplaceSeerPath(t *testing.T) {
-        seerPath := `"1.1.1.1:1111","2.2.2.2:2222"`
+        seerPath := `"1.1.1.1:1111","2.2.2.2:2222","[3:3:3:3]:3333"`
         newSeerPath := `"3.3.3.3:3333","4.4.4.4:4444"`
         ts := int64(1111111111111)
         updatedGossips := constructGossips(ts, seerPath, ``)
@@ -470,7 +470,7 @@ func Test_ReplaceSeerPath(t *testing.T) {
 
 func Test_RemoveSeerPath(t *testing.T) {
         ts := int64(1111111111111)
-        updatedGossips := constructGossips(ts, `"1.1.1.1:1111","2.2.2.2:2222"`, ``)
+        updatedGossips := constructGossips(ts, `"[0:0:0:0]:0000","1.1.1.1:1111","2.2.2.2:2222"`, ``)
         for idx, gossip := range updatedGossips {
                 updatedGossips[idx] = RemoveSeerPath(gossip)
         }
@@ -482,7 +482,7 @@ func Test_RemoveSeerPath(t *testing.T) {
 
 func Test_RemoveTombstone(t *testing.T) {
         ts := int64(1111111111111)
-        seerPath := `"1.1.1.1:1111","2.2.2.2:2222"`
+        seerPath := `"1.1.1.1:1111",[3:3:3:3:3]:3333,"2.2.2.2:2222"`
         updatedGossips := constructGossips(ts, seerPath, `true`)
         for idx, gossip := range updatedGossips {
                 updatedGossips[idx] = RemoveTombstone(gossip)
