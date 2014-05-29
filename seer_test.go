@@ -1,692 +1,132 @@
-package main
+package seer
 
 import (
-        "archive/tar"
-        "bytes"
-        "compress/gzip"
-        "encoding/json"
-        "fmt"
-        "io"
-        "io/ioutil"
-        "os"
-        "sort"
-        "strings"
-        "testing"
-        "time"
+	"encoding/json"
+	"os"
+	"testing"
 )
 
 var (
-        NastyGlobal = map[string]string{}
+	hostmock = map[string][]byte{}
 )
 
-/*******************************************************************************
-    Test Helpers.
-*******************************************************************************/
-
-func constructGossips(ts int64, seerPath string, tombstone string) []string {
-        propmap := map[string]string{
-                `"SeerAddr"`:    `"1.1.1.1:1111"`,
-                `"SeerRequest"`: `"Metadata"`,
-        }
-        propmap[`"TS"`] = fmt.Sprintf(`%d`, ts)
-        if seerPath != `` {
-                propmap[`"SeerPath"`] = fmt.Sprintf(`[%s]`, seerPath)
-        }
-        if tombstone != `` {
-                propmap[`"Tombstone"`] = "true"
-        }
-        keys := []string{}
-        for k, _ := range propmap {
-                keys = append(keys, k)
-        }
-        keycombinations := GetCombinations(keys)
-        gossips := []string{}
-        for _, keycombo := range keycombinations {
-                gossip := ``
-                for _, propname := range keycombo {
-                        gossip = fmt.Sprintf(`%s,%s:%s`, gossip, propname, propmap[propname])
-                }
-                gossip = fmt.Sprintf(`{%s}`, gossip[1:])
-                gossips = append(gossips, gossip)
-        }
-
-        return gossips
+func getMetaMessage(generatekey bool) metaMessage {
+	mm := metaMessage{}
+	mm.Message = map[string]interface{}{}
+	mm.Timestamp = 1234567890
+	mm.Source = udpAddress
+	mm.Message["Type"] = "join"
+	mm.Message["Name"] = "node9999"
+	mm.Message["Port"] = "8888"
+	if generatekey {
+		mm.MessageKey = messageKey(mm)
+	}
+	return mm
 }
 
-func constructTestTarGz(tarpath string, filemap map[string]string) error {
-        tarfile, err := os.Create(tarpath)
-        if err != nil {
-                return err
-        }
-        defer tarfile.Close()
-        // Hacky since too lazy to learn how to manually set file permissions in tar header.
-        tarfileinfo, err := tarfile.Stat()
-        if err != nil {
-                return err
-        }
-        gw, err := gzip.NewWriterLevel(tarfile, gzip.BestCompression)
-        if err != nil {
-                return err
-        }
-        defer gw.Close()
-        tw := tar.NewWriter(gw)
-        defer tw.Close()
-        for filepath, filedata := range filemap {
-                hdr := &tar.Header{
-                        Name:   filepath,
-                        Size:   int64(len(filedata)),
-                        Mode:   int64(tarfileinfo.Mode()),
-                }
-                err = tw.WriteHeader(hdr)
-                if err != nil {
-                }
-                _, err = tw.Write([]byte(filedata))
-                if err != nil {
-                }
-        }
-        return err
+func initializeMocks() {
+	hostmock = map[string][]byte{}
+	sendMessage = func(message []byte, destination string) {
+		hostmock[destination] = message
+	}
+	getPeers = func() []string {
+		return []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"}
+	}
 }
 
-func getUniqueArray(array []string) []string {
-        uniquifier := map[string]bool{}
-        for _, item := range array {
-                uniquifier[item] = true
-        }
-        result := []string{}
-        for item, _ := range uniquifier {
-                result = append(result, item)
-        }
-        return result
+func Test_auth(t *testing.T) {
+	mm := getMetaMessage(false)
+
+	if auth(mm) {
+		t.Errorf("How can a metaMessage auth with no key?")
+	}
+	mm.MessageKey = messageKey(mm)
+
+	if !auth(mm) {
+		t.Errorf("My key works now so why cannot I auth?")
+	}
 }
 
-func int64ArraysEqual(array1 []int64, array2 []int64) bool {
-        if len(array1) != len(array2) {
-                return false
-        }
-        for idx, val := range array1 {
-                if array2[idx] != val {
-                        return false
-                }
-        }
-        return true
+func Test_messageKey(t *testing.T) {
+	// Init new store since messageKey() needs secret.
+	New("127.0.0.1", 9999, 9998, "dontkeepsecrets", []string{"127.0.0.1:8888"})
+
+	mm := getMetaMessage(false)
+	key := messageKey(mm)
+	// Sort of a circular test.
+	if key != `nHfROSxQKJbg1hn3KaHzJu4OQ9FRTwmVLHvX0pVougE=` {
+		t.Errorf("%s\n", key)
+	}
 }
 
-func setsEqual(arrayOne []string, arrayTwo []string) bool {
-        arrayOneTracker := map[string]bool{}
-        arrayTwoTracker := map[string]bool{}
-        for _, item := range arrayOne {
-                arrayOneTracker[item] = true
-        }
-        for _, item := range arrayTwo {
-                arrayTwoTracker[item] = true
-                if !arrayOneTracker[item] {
-                        return false
-                }
-        }
-        for item, _ := range arrayOneTracker {
-                if !arrayTwoTracker[item] {
-                        return false
-                }
-        }
-        return true
+func Test_joinMessage(t *testing.T) {
+	datadir = "test_seer_data"
+	defer os.RemoveAll(datadir)
+
+	peers := getPeers()
+	if len(peers) != 0 {
+		t.Errorf("I should have no peers, yet there are %d", len(peers))
+	}
+	mm := joinMessage("127.0.0.1:1111", "127.0.0.1", "2222")
+	persistMessage(mm)
+	peers = getPeers()
+	if len(peers) != 1 {
+		t.Errorf("I should have 1 peer, yet there are %d", len(peers))
+	}
+	mm = joinMessage("127.0.0.1:2222", "127.0.0.1", "3333")
+	persistMessage(mm)
+	peers = getPeers()
+	if len(peers) != 2 {
+		t.Errorf("I should have 2 peers, yet there are %d", len(peers))
+	}
 }
 
-/*******************************************************************************
-    Tests for ??.
-*******************************************************************************/
+func Test_gossip(t *testing.T) {
+	initializeMocks()
+	if len(hostmock) != 0 {
+		t.Errorf("What have you done?")
+	}
+	mm := getMetaMessage(true)
+	gossip(mm)
 
-func Test_BootStrap(t *testing.T) {
-        NastyGlobal = map[string]string{}
-        // Nasty mocking!!
-        SendGossip = func(message string, seeder string) {
-                NastyGlobal["message"] = message
-                NastyGlobal["seeder"] = seeder
-        }
-
-        seeder := "magic"
-        BootStrap(seeder, tcpAddress)
-        expectedMessage := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, udpAddress)
-        expectedSeeder := fmt.Sprintf("255.255.255.255:%s", *udpPort)
-        if NastyGlobal["message"] != expectedMessage ||
-                NastyGlobal["seeder"] != expectedSeeder {
-                t.Errorf("BROKE! seeder: %s\nmessage: %s\nexpected: %s, %s", NastyGlobal["seeder"], NastyGlobal["message"], expectedMessage, expectedSeeder)
-        }
-
-        seeder = "1.1.1.1.1:9999"
-        BootStrap(seeder, tcpAddress)
-        expectedMessage = fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, tcpAddress)
-        expectedSeeder = seeder
-        if NastyGlobal["message"] != expectedMessage ||
-                NastyGlobal["seeder"] != expectedSeeder {
-                t.Errorf("BROKE! seeder: %s\nmessage: %s\nexpected: %s, %s", NastyGlobal["seeder"], NastyGlobal["message"], expectedMessage, expectedSeeder)
-        }
+	if len(hostmock) != 5 {
+		t.Errorf("%d hosts should have been sent to!", len(hostmock))
+	}
+	mmm, _ := json.Marshal(mm)
+	for peer, message := range hostmock {
+		if string(message) != string(mmm) {
+			t.Errorf("Peer: %s seems to have wrong message:\n%v\n%v.", peer, message, mmm)
+		}
+	}
 }
 
-/*******************************************************************************
-    Tests for basic gossip functions.
-*******************************************************************************/
+func Test_tombstoneReaper(t *testing.T) {
+	datadir = "test_seer_data"
+	defer os.RemoveAll(datadir)
 
-func Test_VerifyGossip(t *testing.T) {
-        constructedGossips := constructGossips(int64(111111111), ``, ``)
-        for _, gossip := range constructedGossips {
-                decodedGossip, err := VerifyGossip(gossip)
-                if err != nil {
-                        t.Errorf("Verify Failed! err: %v, decodedGossip: %v, gossip: %v\n", err, decodedGossip, gossip)
-                }
-        }
+	mm := joinMessage("1.1.1.1:1", "1.1.1.1", "1")
+	persistMessage(mm)
+	mm = leaveMessage("2.2.2.2:2", "2.2.2.2", "2")
+	mm.Timestamp = MS(Now()) - 25*60*60*1000
+	persistMessage(mm)
 
-        badGossip := fmt.Sprintf(`{"SeerAddr":10.10.10.10,"TS":%d,"SeerPath":["2.2.2.2:2222"]}`, MS(Now()))
-        decodedGossip, err := VerifyGossip(badGossip)
-        if err == nil {
-                t.Errorf("Bad Gossip Verified! err: %v, decodedGossip: %v, badGossip: %v\n", err, decodedGossip, badGossip)
-        }
+	keypaths := getKeyPaths()
+	if len(keypaths) != 2 {
+		t.Errorf("Should be 2 keypaths!")
+	}
 
-}
+	tombstoneReaper()
+	keypaths = getKeyPaths()
+	if len(keypaths) != 1 {
+		t.Errorf("Should be 1 keypath left!")
+	}
 
-func Test_ReGossip(t *testing.T) {
-        fresherGossip := `{"SeerAddr":"1.1.1.1:1","TS":999999999,"SeerPath":["2.2.2.2:2222"]}`
-        gossip := `{"SeerAddr":"1.1.1.1:1","TS":888888888,"SeerPath":["3.3.3.3:3333"]}`
+	mm = leaveMessage("2.2.2.2:2", "2.2.2.2", "2")
+	persistMessage(mm)
 
-        regossip := ReGossip(fresherGossip, gossip)
-        expectedgossip := `{"SeerAddr":"1.1.1.1:1","TS":888888888,"SeerPath":["3.3.3.3:3333","2.2.2.2:2222"],"ReGossip":true}`
-        if regossip != expectedgossip {
-                t.Errorf("regossip looks wrong!\n    %s", regossip)
-        }
-
-        // Verify regossip is valid.
-        decodedGossip, err := VerifyGossip(regossip)
-        if err != nil {
-                t.Errorf("regossip failed verification!\nErr: %s.\nregossip: %s\ndecoded gossip: %v", err, regossip, decodedGossip)
-        }
-
-        // regossip should be empty for already ReGossiped gossip.
-        regossip = ReGossip(fresherGossip, expectedgossip)
-        if regossip != `` {
-                t.Errorf("regossip looks wrong!\n    %s", regossip)
-        }
-
-        // gregossip should be empty there is no fresherGossip is empty.
-        fresherGossip = ``
-        regossip = ReGossip(fresherGossip, gossip)
-        if regossip != `` {
-                t.Errorf("regossip looks wrong!\n    %s", regossip)
-        }
-}
-
-/*******************************************************************************
-    Tests for file IO related functions.
-*******************************************************************************/
-
-func Test_LazyWriteFile(t *testing.T) {
-        rootfolder := "test-folder"
-        folder := rootfolder + "/subpath"
-        filename := "test-filename.t"
-        content := "stuff that goes in test file."
-        err := LazyWriteFile(folder, filename, []byte(content))
-        if err != nil {
-                t.Errorf("Error writing file for first time. err: %s", err)
-        }
-        defer os.RemoveAll(rootfolder)
-        readcontent, _ := ioutil.ReadFile(folder + "/" + filename)
-        if string(readcontent) != content {
-                t.Errorf("File contents don't match!. expected: %s, got: %s", content, readcontent)
-        }
-        content = "new stuff overwriting file."
-        err = LazyWriteFile(folder, filename, []byte(content))
-        if err != nil {
-                t.Errorf("Error overwriting existing file.")
-        }
-        readcontent, _ = ioutil.ReadFile(folder + "/" + filename)
-        if string(readcontent) != content {
-                t.Errorf("File contents don't match!. expected: %s, got: %s", content, readcontent)
-        }
-        if "should not match" == content {
-                t.Errorf("Content spuriously matched something that it should not match!")
-        }
-}
-
-func Test_FreshGossip(t *testing.T) {
-        // Put file with TS.. read and verify that TS is understood to be fresh or old.
-        gossipfolder := "test-gossip-folder"
-        gossipfile := "file.gossip"
-        TS := int64(1111111111)
-        gossip := fmt.Sprintf(`{"TS":%d}`, TS)
-        _ = LazyWriteFile(gossipfolder, gossipfile, []byte(gossip))
-        defer os.RemoveAll(gossipfolder)
-        TS += 100
-        fresh, _ := FreshGossip(gossipfolder+"/"+gossipfile, TS)
-        if !fresh {
-                t.Errorf("Did not report as fresh even though TS used is newer.")
-        }
-        TS -= 200
-        fresh, _ = FreshGossip(gossipfolder+"/"+gossipfile, TS)
-        if fresh {
-                t.Errorf("Reported as fresh even though TS is older.")
-        }
-}
-
-func Test_getGossipArray(t *testing.T) {
-        gossipsByService := map[string][]string{}
-        gossipsBySeer := map[string][]string{}
-        gossipArray, _ := getGossipArray("catpics", "service", "data")
-        if len(gossipArray) != 0 {
-                t.Errorf("There should be no 'catpics' service info here! But received len: %d, gossipArray: %v", len(gossipArray), gossipArray)
-        }
-        for idx, servicename := range []string{"catpics", "nagbot", "catpics"} {
-                idx = idx + 1
-                var g Gossip
-                g.SeerAddr = fmt.Sprintf("%d.%d.%d.%d:%d%d%d%d", idx, idx, idx, idx, idx, idx, idx, idx)
-                g.ServiceName = servicename
-                g.ServiceAddr = fmt.Sprintf("%s:%d%d%d%d", g.SeerAddr, idx+1, idx+1, idx+1, idx+1)
-                g.TS = MS(Now())
-                gossip, _ := json.Marshal(g)
-                _, _ = PutGossip(string(gossip), g)
-                if gossipsByService[servicename] == nil {
-                        gossipsByService[servicename] = []string{}
-                }
-                gossipsByService[servicename] = append(gossipsByService[servicename], string(gossip))
-                if gossipsBySeer[g.SeerAddr] == nil {
-                        gossipsBySeer[g.SeerAddr] = []string{}
-                }
-                gossipsBySeer[g.SeerAddr] = append(gossipsBySeer[g.SeerAddr], string(gossip))
-        }
-        defer os.RemoveAll(SeerDirs["data"])
-        for servicename, gossips := range gossipsByService {
-                gossipArray, _ = getGossipArray(servicename, "service", "data")
-                if !setsEqual(gossipArray, gossips) {
-                        t.Errorf("getGossipArray: %v\n%v", gossipArray, gossips)
-                }
-        }
-        for seeraddr, gossips := range gossipsBySeer {
-                gossipArray, _ = getGossipArray(seeraddr, "host", "data")
-                if !setsEqual(gossipArray, gossips) {
-                        t.Errorf("getGossipArray: %v\n%v", gossipArray, gossips)
-                }
-        }
-}
-
-func Test_sendSeed(t *testing.T) {
-        go ServiceServer(":" + *tcpPort)
-        TS := MS(Now())
-        filemap := map[string]string{
-                `host/2.2.2.2:2222/Seer`: fmt.Sprintf(`{"SeerAddr":"2.2.2.2:2222","TS":%d}`, TS),
-                `host/3.3.3.3:3333/Seer`: fmt.Sprintf(`{"SeerAddr":"3.3.3.3:3333","TS":%d}`, TS),
-        }
-        tarpath := "/tmp/go-sendSeed-test.tar.gz"
-        err := constructTestTarGz(tarpath, filemap)
-        if err != nil {
-                t.Errorf("Error creating test tarfile: %v", err)
-        }
-        defer os.Remove(tarpath)
-        defer os.RemoveAll(SeerDirs["data"])
-        err = sendSeed(tcpAddress, tarpath)
-        if err != nil {
-                t.Errorf("sendSeed() reported error: %s", err)
-        }
-        <-BoolChannels["seerReady"]
-        for _, seeraddr := range []string{"2.2.2.2:2222", "3.3.3.3:3333"} {
-                gossipArray, err := getGossipArray(seeraddr, "host", "data")
-                if len(gossipArray) != 1 {
-                        t.Errorf("Couldn't find host data for SeerAddr: %s, gossipArray: %v, err: %s", seeraddr, gossipArray, err)
-                }
-        }
-}
-
-func Test_createTarGz(t *testing.T) {
-        // World's most painful unittest.  Feels like I am Doing It Wrong.
-        tarpath := "/tmp/go-createTarGz-test.tar.gz"
-
-        err := createTarGz(tarpath, "/badpath/to/a/folder/to/gz", "/badpath/to/another/folder/to/gz")
-        if err == nil {
-                t.Error("Should have received an error but I did not!!")
-        }
-        folders := map[string]string{
-                "file1": SeerDirs["data"] + "/testdir1/subdir",
-                "file2": SeerDirs["data"] + "/testdir2/subdir",
-        }
-        for filename, folder := range folders {
-                os.MkdirAll(folder, 0777)
-                fullpath := folder + "/" + filename
-                ioutil.WriteFile(fullpath, []byte(fmt.Sprintf(`%s`, fullpath)), 0777)
-                defer os.RemoveAll(strings.Replace(folder, "/subdir", "", -1))
-        }
-
-        err = createTarGz(tarpath, strings.Replace(folders["file1"], "/subdir", "", -1), strings.Replace(folders["file2"], "/subdir", "", -1))
-
-        if err != nil {
-                t.Errorf("Received a createTarGz() err: %v", err)
-                return
-        }
-        defer os.Remove(tarpath)
-        // Open tar and verify files. Ugggg.
-        targzfile, err := os.Open(tarpath)
-        if err != nil {
-                t.Errorf("Received an os.Open() err: %v", err)
-                return
-        }
-        defer targzfile.Close()
-        gzr, err := gzip.NewReader(targzfile)
-        if err != nil {
-                t.Errorf("Received a gzip.NewReader() err: %v", err)
-                return
-        }
-        defer gzr.Close()
-        tr := tar.NewReader(gzr)
-        extractedFiles := map[string]string{}
-        for {
-                hdr, err := tr.Next()
-                if err == io.EOF {
-                        break
-                }
-                buff := bytes.NewBuffer(nil)
-                filename, dir := GetFilenameAndDir(hdr.Name)
-                io.Copy(buff, tr)
-                extractedFiles[filename] = strings.Replace(buff.String(), "/"+filename, "", -1)
-                // Verify dir from hdr.Name is "appropriate".
-                if !strings.HasSuffix(folders[filename], dir) || strings.HasPrefix(dir, SeerDirs["data"]) {
-                        t.Errorf("Extracted dir is wrong! Got: %s, Expected: %s", dir, folders[filename])
-                        return
-                }
-        }
-        for filename, folder := range folders {
-                if folder != extractedFiles[filename] {
-                        t.Errorf("Filename: %s Mismatch. Got: %s, Expected: %s", filename, extractedFiles[filename], folder)
-                }
-        }
-}
-
-func Test_processSeed(t *testing.T) {
-        // Less Ugly
-        TS := MS(Now())
-        filemap := map[string]string{
-                `host/2.2.2.2:2222/Seer`: fmt.Sprintf(`{"SeerAddr":"2.2.2.2:2222","TS":%d}`, TS),
-                `host/3.3.3.3:3333/Seer`: fmt.Sprintf(`{"SeerAddr":"3.3.3.3:3333","TS":%d}`, TS),
-        }
-        tarpath := "/tmp/go-processSeed-test.tar.gz"
-        err := constructTestTarGz(tarpath, filemap)
-        if err != nil {
-                t.Errorf("Error creating tarfile: %v", err)
-        }
-        defer os.Remove(tarpath)
-        defer os.RemoveAll(SeerDirs["data"])
-
-        processSeed(tarpath)
-
-        for filepath, filedata := range filemap {
-                processedPath := SeerDirs["data"] + "/" + filepath
-                processedFile, err := ioutil.ReadFile(processedPath)
-                if err != nil {
-                        t.Errorf("Error finding processedPath: %s", processedPath)
-                }
-                if string(processedFile) != filedata {
-                        t.Errorf("File Contents mismatch: [%s] != [%s]", string(processedFile), filedata)
-                }
-        }
-}
-
-/*******************************************************************************
-    Tests for Regex functions.
-*******************************************************************************/
-
-func Test_ExtractSeerPathFromJSON_ipv4(t *testing.T) {
-        seerPath := `"1.1.1.1:1111","2.2.2.2:2222"`
-        ts := int64(1111111111111)
-        constructedGossips := constructGossips(ts, seerPath, ``)
-        for _, gossip := range constructedGossips {
-                extractedSeerPath, _ := ExtractSeerPathFromJSON(gossip, false)
-                if extractedSeerPath != seerPath {
-                        t.Errorf("ExtractedSeerPath Mismatch! %s != %s!\n", extractedSeerPath, seerPath)
-                }
-        }
-}
-
-func Test_ExtractSeerPathFromJSON_ipv6(t *testing.T) {
-        seerPath := `"[1:1:1:1]:1111","[2:2:2:2]:2222"`
-        ts := int64(1111111111111)
-        constructedGossips := constructGossips(ts, seerPath, ``)
-        for _, gossip := range constructedGossips {
-                extractedSeerPath, _ := ExtractSeerPathFromJSON(gossip, false)
-                if extractedSeerPath != seerPath {
-                        t.Errorf("ExtractedSeerPath Mismatch! %s != %s!\n", extractedSeerPath, seerPath)
-                }
-        }
-}
-
-func Test_UpdateSeerPath(t *testing.T) {
-        seerPath := `"1.1.1.1:1111","[2:2:2:2]:2222","4.4.4.4:4444"`
-        newSeer := `"3.3.3.3:3333"`
-        ts := int64(1111111111111)
-        updatedGossips := constructGossips(ts, seerPath, ``)
-
-        for idx, gossip := range updatedGossips {
-                updatedGossips[idx] = UpdateSeerPath(gossip, newSeer)
-        }
-
-        seerPath = newSeer + `,` + seerPath
-        expectedGossips := constructGossips(ts, seerPath, ``)
-        if !setsEqual(expectedGossips, updatedGossips) {
-                t.Errorf("UpdateSeerPath: %v\n%v", getUniqueArray(updatedGossips), getUniqueArray(expectedGossips))
-        }
-}
-
-func Test_ReplaceSeerPath(t *testing.T) {
-        seerPath := `"1.1.1.1:1111","2.2.2.2:2222","[3:3:3:3]:3333"`
-        newSeerPath := `"3.3.3.3:3333","4.4.4.4:4444"`
-        ts := int64(1111111111111)
-        updatedGossips := constructGossips(ts, seerPath, ``)
-
-        for idx, gossip := range updatedGossips {
-                updatedGossips[idx] = ReplaceSeerPath(gossip, newSeerPath)
-        }
-
-        expectedGossips := constructGossips(ts, newSeerPath, ``)
-        if !setsEqual(expectedGossips, updatedGossips) {
-                t.Errorf("UpdateSeerPath: %v\n%v", getUniqueArray(updatedGossips), getUniqueArray(expectedGossips))
-        }
-}
-
-func Test_RemoveSeerPath(t *testing.T) {
-        ts := int64(1111111111111)
-        updatedGossips := constructGossips(ts, `"[0:0:0:0]:0000","1.1.1.1:1111","2.2.2.2:2222"`, ``)
-        for idx, gossip := range updatedGossips {
-                updatedGossips[idx] = RemoveSeerPath(gossip)
-        }
-        expectedGossips := constructGossips(ts, ``, ``)
-        if !setsEqual(expectedGossips, updatedGossips) {
-                t.Errorf("RemoveSeerPath gave:%v\n%v", getUniqueArray(updatedGossips), getUniqueArray(expectedGossips))
-        }
-}
-
-func Test_RemoveTombstone(t *testing.T) {
-        ts := int64(1111111111111)
-        seerPath := `"1.1.1.1:1111",[3:3:3:3:3]:3333,"2.2.2.2:2222"`
-        updatedGossips := constructGossips(ts, seerPath, `true`)
-        for idx, gossip := range updatedGossips {
-                updatedGossips[idx] = RemoveTombstone(gossip)
-        }
-        expectedGossips := constructGossips(ts, seerPath, ``)
-        if !setsEqual(expectedGossips, updatedGossips) {
-                t.Errorf("RemoveTombstone gave:%v\n%v", getUniqueArray(updatedGossips), getUniqueArray(expectedGossips))
-        }
-}
-
-func Test_ExtractTSFromJSON_1(t *testing.T) {
-        ts := int64(1111111111111)
-        gossips := constructGossips(ts, `"1.1.1.1:1111"`, ``)
-        for _, gossip := range gossips {
-                extractedTs, _ := ExtractTSFromJSON(gossip)
-                if extractedTs != ts {
-                        t.Errorf("%d != %d for gossip: %s", extractedTs, ts, gossip)
-                }
-        }
-}
-
-func Test_UpdateTS_1(t *testing.T) {
-        // Forcing Now to return fixed time.
-        now := time.Unix(3333333333, 0)
-        Now = func() time.Time { return now }
-
-        ts := MS(time.Unix(1111111111, 0))
-        updatedGossips := constructGossips(ts, `"1.1.1.1:1111"`, ``)
-        for idx, gossip := range updatedGossips {
-                updatedGossips[idx] = UpdateTS(gossip)
-        }
-        expectedGossips := constructGossips(MS(now), `"1.1.1.1:1111"`, ``)
-        if !setsEqual(expectedGossips, updatedGossips) {
-                t.Errorf("UpdateTS: %v\n%v", updatedGossips, expectedGossips)
-        }
-}
-
-/*******************************************************************************
-    Tests for Metadata functions.
-*******************************************************************************/
-
-func Test_getTSLag(t *testing.T) {
-        unixtime := Now()
-        ts := MS(unixtime)
-        for _, constructedLag := range []int64{-100, 0, 100} {
-                newts := ts - constructedLag
-                gossip := fmt.Sprintf(`{"TS":%d}`, newts)
-                lag, err := getTSLag(gossip, unixtime)
-                if lag != constructedLag || err != nil {
-                        t.Errorf("Lag expected to be %v with no error but got -  lag:%v, err:%v, gossip: %s", constructedLag, lag, err, gossip)
-                }
-        }
-}
-
-/*******************************************************************************
-    Tests for silly helper functions.
-*******************************************************************************/
-
-func Test_Int64Array_1(t *testing.T) {
-        intArray := []int64{9, 8, 1, 3, 2, 4, 7, 6, 5, 0}
-        sort.Sort(Int64Array(intArray))
-        if !int64ArraysEqual(intArray, []int64{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}) {
-                t.Error("Int64Array sorting Broken!")
-        }
-}
-
-func Test_GetFilenameAndDir(t *testing.T) {
-        fullpath := `/iam/a/full/path/and/filename.f`
-        filename, dir := GetFilenameAndDir(fullpath)
-        if filename != `filename.f` || dir != `/iam/a/full/path/and` {
-                t.Errorf("[GetFilenameAndDir] fullpath: %s, filename: %s, dir: %s", fullpath, filename, dir)
-        }
-}
-
-func Test_GetCombinations_1(t *testing.T) {
-        keys := []string{"1", "2", "3"}
-        result := GetCombinations(keys)
-        expectedResult := [][]string{
-                []string{"3", "2", "1"},
-                []string{"2", "3", "1"},
-                []string{"2", "1", "3"},
-                []string{"3", "1", "2"},
-                []string{"1", "3", "2"},
-                []string{"1", "2", "3"},
-        }
-        kosher := true
-        for i, _ := range result {
-                for j, _ := range result[i] {
-                        if result[i][j] != expectedResult[i][j] {
-                                kosher = false
-                        }
-                }
-        }
-        if !kosher {
-                t.Errorf("%v", result)
-        }
-}
-
-func Test_Percentile_OddLen(t *testing.T) {
-        sortedArray := []int64{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24}
-        length := float64(len(sortedArray))
-        for idx, n := range sortedArray {
-                percentile := float64(idx) / length
-                if Percentile(sortedArray, percentile) != n {
-                        t.Errorf("Percentile(.., %f) Broken for odd len array!", percentile)
-                        t.Errorf("Got: %d, for idx: %d", Percentile(sortedArray, percentile), idx)
-                }
-        }
-}
-
-func Test_Percentile_EvenLen(t *testing.T) {
-        sortedArray := []int64{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25}
-        length := float64(len(sortedArray))
-        for idx, n := range sortedArray {
-                percentile := float64(idx) / length
-                if Percentile(sortedArray, percentile) != n {
-                        t.Errorf("Percentile(.., %f) Broken for even len array!", percentile)
-                        t.Errorf("Got: %d, for idx: %d", Percentile(sortedArray, percentile), idx)
-                }
-        }
-}
-
-func Test_AbsInt_1(t *testing.T) {
-        if AbsInt(-3) != 3 {
-                t.Error("AbsInt() Broken!")
-        }
-}
-
-func Test_MinInt_1(t *testing.T) {
-        if MinInt(3, 4) != 3 {
-                t.Error("MinInt() Broken!")
-        }
-}
-
-func Test_MaxInt_1(t *testing.T) {
-        if MaxInt(3, 4) != 4 {
-                t.Error("MaxInt() Broken!")
-        }
-}
-
-func Test_MS_1(t *testing.T) {
-        testTime := time.Unix(1386118310, 0)
-        if MS(testTime) != 1386118310000 {
-                t.Error("MS() Broken!")
-        }
-}
-
-func Test_MergeDelimitedStrings_1(t *testing.T) {
-        current := `c,d,e,f`
-        new := `a,b,c,d`
-        expected := `a,b,c,d,e,f`
-
-        merged := MergeDelimitedStrings(current, new)
-        if merged != expected {
-                t.Errorf("Expected: %s, Got: %s", expected, merged)
-        }
-}
-
-func Test_MergeDelimitedStrings_2(t *testing.T) {
-        current := ``
-        new := `a,b,c,d`
-        expected := `a,b,c,d`
-
-        merged := MergeDelimitedStrings(current, new)
-        if merged != expected {
-                t.Errorf("Expected: %s, Got: %s", expected, merged)
-        }
-}
-
-func Test_MergeDelimitedStrings_3(t *testing.T) {
-        current := `c,d,e,f`
-        new := ``
-        expected := `c,d,e,f`
-
-        merged := MergeDelimitedStrings(current, new)
-        if merged != expected {
-                t.Errorf("Expected: %s, Got: %s", expected, merged)
-        }
-}
-
-func Test_MergeDelimitedStrings_4(t *testing.T) {
-        current := ``
-        new := ``
-        expected := ``
-
-        merged := MergeDelimitedStrings(current, new)
-        if merged != expected {
-                t.Errorf("Expected: %s, Got: %s", expected, merged)
-        }
+	tombstoneReaper()
+	keypaths = getKeyPaths()
+	if len(keypaths) != 2 {
+		t.Errorf("Tombstoned item should not have been reaped!")
+	}
 }

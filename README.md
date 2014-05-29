@@ -1,75 +1,74 @@
-# Seer
+seer
+========
 
-Service discovery a.k.a. directory services a.k.a LDAP-y.
+Simplified gossip based key-value store.
 
-# Local Test
 
-Go Get:
+Quick Start
+===========
+
+To Test:
 ```
-	$ cd ~
-	$ go get github.com/eliwjones/seer
-	$ go get code.google.com/p/go.net/ipv4
-```
-
-Start initial node:
-
-```
-	$ go run go/src/github.com/eliwjones/seer/seer.go -ip=127.0.0.1 -tcp=10000 -udp=9000 -listenbroadcast=false
-```
-
-Start peers:
-
-```
-	$ go run go/src/github.com/eliwjones/seer/seer.go -ip=127.0.0.1 -tcp=10001 -udp=9001 -listenbroadcast=false -bootstrap=127.0.0.1:9000
-	$ go run go/src/github.com/eliwjones/seer/seer.go -ip=127.0.0.1 -tcp=10002 -udp=9002 -listenbroadcast=false -bootstrap=127.0.0.1:9000
-	$ go run go/src/github.com/eliwjones/seer/seer.go -ip=127.0.0.1 -tcp=10003 -udp=9003 -listenbroadcast=false -bootstrap=127.0.0.1:9000
-	$ go run go/src/github.com/eliwjones/seer/seer.go -ip=127.0.0.1 -tcp=10004 -udp=9004 -listenbroadcast=false -bootstrap=127.0.0.1:9000
-```
-
-Verify peers are aware (result of each of these commands should be "5"):
-```
-	$ for i in {0..4}; do curl -s http://127.0.0.1:1000$i/service/Seer | awk -F'},{' '{print NF}'; done;
+$ git clone git@github.com:eliwjones/seer.git
+$ cd seer
+$ go test -v
+=== RUN Test_auth
+--- PASS: Test_auth (0.00 seconds)
+=== RUN Test_messageKey
+--- PASS: Test_messageKey (0.00 seconds)
+=== RUN Test_joinMessage
+--- PASS: Test_joinMessage (0.00 seconds)
+=== RUN Test_gossip
+--- PASS: Test_gossip (0.00 seconds)
+=== RUN Test_tombstoneReaper
+--- PASS: Test_tombstoneReaper (0.00 seconds)
+PASS
+ok  	github.com/eliwjones/seer	0.004s
 ```
 
-Add a new service:
+To Run:
 ```
-	$ curl -X PUT -H "Content-Type: application/json" -d '{"ServiceName":"catpics","ServiceAddr":"127.0.0.1:12345"}' http://127.0.0.1:10004/service
+$ go run cmd/sd/sd.go -ip=127.0.0.1 -udp=9999 -tcp=9998 # From top level dir.
 ```
-
-Ask a node about this new service:
+Try to join another server:
 ```
-	$ curl http://127.0.0.1:10001/service/catpics
+$ go run cmd/sd/sd.go -ip=127.0.0.1 -udp=8888 -tcp=8887 -seeds=127.0.0.1:9999
 ```
-
-# Protocol Simulator
-
-To run default simulation (nodecount 500, gossipeecount 8, pathlimit 7, bouncelimit 0):
+Curl the httpserver for hosts:
 ```
-  $  go run go/src/github.com/eliwjones/seer/gossip_protocol_simulator.go
+$ curl -G -s http://127.0.0.1:9998/host | python -m json.tool
+[
+    {
+        "IndexedProperties": [
+            "Host"
+        ],
+        "Message": {
+            "Host": "127.0.0.1:8888",
+            "Name": "127.0.0.1",
+            "Port": "8888"
+        },
+        "MessageKey": "O+5KTQ3rv0sJpeY7RXXwA72wE0AaIqJdlfVdGRN4TvQ=",
+        "Source": "127.0.0.1:8888",
+        "Timestamp": 1397177531391
+    },
+    {
+        "Control": "seed",
+        "IndexedProperties": [
+            "Host"
+        ],
+        "Message": {
+            "Host": "127.0.0.1:9999",
+            "Name": "127.0.0.1",
+            "Port": "9999"
+        },
+        "MessageKey": "dIyUbdx3A42XWVxMqn98JWkYATPLEjz2YRC/qkz2pzM=",
+        "Source": "127.0.0.1:8888",
+        "Timestamp": 1397177531545
+    }
+]
 ```
-
-"GossipGossip0" is a naive gossip method.  When a node receives new gossip, it picks a number (gossipeecount) of random nodes and blindly sends the gossip to them.
-
-"GossipGossip1" attempts to avoid sending gossip back to hosts that have already seen it.
-
-One thing the protocol simulator already shows is that:
-
-In an idealized setting, there is no difference between these methods (when it comes to gossip coverage or redundant gossip counts).  This implies that tracking the gossip path will mainly be useful for inferring network topology.
-
-
-To run a protocol simulation with a smaller gossipeecount:
+Put something in thestore:
 ```
-  $ go run go/src/github.com/eliwjones/seer/gossip_protocol_simulator.go --gossipeecount=4
+$ curl -X PUT -H 'Content-Type: application/json' -H 'X-IndexedProperties: ["ServiceName"]' -d '{"ServiceName":"catpics","ServiceAddr":"127.0.0.1:12345"}' hhttp://127.0.0.1:9998
+PUT: {"Timestamp":1398114761675,"Source":"127.0.0.1:9999","Message":{"ServiceAddr":"127.0.0.1:12345","ServiceName":"catpics"},"MessageKey":"qmYSnSEMRY86evfpGlSJGJN/DTJpr6yd6rCeYuw5Stc=","IndexedProperties":["ServiceName"]}.
 ```
-
-This shows you that you can drop the multiplier (or redundancy) from ~7-8 to ~3-4 while still getting around 97%-98% coverage (under ideal network circumstances).
-
-
-Now, if you add messageloss of 33%:
-```
-  $ go run go/src/github.com/eliwjones/seer/gossip_protocol_simulator.go --gossipeecount=4 --messageloss=33
-  $ go run go/src/github.com/eliwjones/seer/gossip_protocol_simulator.go --messageloss=33
-```
-
-For the naive method, you get about 90%-93% coverage with gossipeecount=4 and 98.8%-99.4% coverage using the default gossipeecount=8.  So, it helps to know what mix of redundancy and coverage you want or are willing to accept.
-
