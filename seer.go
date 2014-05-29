@@ -1,1361 +1,516 @@
-package main
+package seer
 
 import (
-        "code.google.com/p/go.net/ipv4"
-        "code.google.com/p/go.net/ipv6"
-
-        "archive/tar"
-        "bytes"
-        "compress/gzip"
-        "encoding/json"
-        "errors"
-        "flag"
-        "fmt"
-        "io"
-        "io/ioutil"
-        "log"
-        "math"
-        "math/rand"
-        "net"
-        "net/http"
-        "os"
-        "os/signal"
-        "regexp"
-        "runtime"
-        "sort"
-        "strconv"
-        "strings"
-        "time"
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
+	"math/rand"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"time"
 )
-
-type Gossip struct {
-        SeerAddr    string
-        ServiceName string
-        ServiceAddr string
-        SeerRequest string          `json:",omitempty"`
-        SeerPath    []string        `json:",omitempty"`
-        Tombstone   bool            `json:",omitempty"`
-        TS          int64           `json:",omitempty"`
-        Metadata    json.RawMessage `json:",omitempty"`
-        ReGossip    bool            `json:",omitempty"`
-}
 
 var (
-        udpAddress        string
-        tcpAddress        string
-        gossipSocket      *net.UDPConn
-        lastSeedTS        int64
-        gossipReceived    chan string
-        gossipCount       int
-        uniqueGossipCount int
+	udpSendSocket  *net.UDPConn
+	recentMessages = map[string]int64{}
 
-        /* Defined variables go here. */
-        isIPv6          = false
-        BoolChannels    = map[string]chan bool{}
-        SeerDirs        = map[string]string{}
-        neighborhood    = -1
-        commandList     = map[string]bool{"exit": true, "get": true}
-        seerNearness    = map[string]int{}
-        whitelist       = map[string]bool{}
-        tsRegexp        = regexp.MustCompile(`(,?\s*)("TS"\s*:\s*)(\d+)(\s*[,|}])`)
-        seerPathRegexp  = regexp.MustCompile(`(\s*)("SeerPath"\s*:\s*\[)(.+?)(\]\s*)([,|}])`)
-        tombstoneRegexp = regexp.MustCompile(`(\s*)("Tombstone"\s*:\s*)(true)(\s*)`)
-
-        /* Flags go here */
-        hostIP          = flag.String("ip", "", "REQUIRED! IP address to communicate with other Seers from.")
-        udpPort         = flag.String("udp", "9999", "<port> to use for UDP server. Default is: 9999")
-        tcpPort         = flag.String("tcp", "9998", "<port> to use for HTTP server.  Default is: 9998")
-        bootstrap       = flag.String("bootstrap", "", "<host>:<udp port> for Seer Host to request seed from. Use -bootstrap=magic to search.")
-        listenBroadcast = flag.Bool("listenbroadcast", true, "Can disable listening to broadcast UDP packets.  Useful for testing multiple IPs on same machine.")
-        raiseTheDead    = flag.Bool("raisethedead", false, "Will gossip out that all previously Tombstone-d services are now up.")
-
-        /* Testing Flags */
-        messageLoss   = flag.Int("messageloss", 0, "Use to simulate percent message loss. e.g. --messageloss=10 implies 10% dropped messages.")
-        messageDelay  = flag.Int("messagedelay", 0, "Use to simulate millisecond delay in communication between Seers. e.g. --messagedelay=100 waits 100ms before sending.")
-        logCounts     = flag.Bool("logcounts", false, "Bool flag for locally logging number of SendGossip calls.  Can then aggregate total messages sent.  e.g. --logcounts=true")
-        neighborhoods = flag.Int("neighborhoods", -1, "For defining number of neighborhoods. If --neighborhoods=3, for Seer hostIPs = X.Y.Z.W,  W%3 defines which neighborhood a Seer belongs to.")
-        whitelistFlag = flag.String("whitelist", "", "Comma delimited list of whitelisted Seer hostIPs.  Thus, seer can communicate with whitelisted host even if it is not in its neighborhood.")
+	// Global vars for easier testing.  Overwritten by seer.New(params...)
+	hostIP      string
+	secret      string
+	tcpPort     int
+	tcpAddress  string
+	udpPort     int
+	udpAddress  string
+	database    string
+	datadir     string
+	metadatadir string
+	seeded      bool
 )
 
-func init() {
-        rand.Seed(time.Now().UTC().UnixNano())
-        runtime.GOMAXPROCS(int(runtime.NumCPU() / 2))
-        flag.Parse()
-
-        if *hostIP == "" {
-                fmt.Printf("Please pass -ip=W.X.Y.Z or -ip=W:X:Y:Z (for ipv6)\n")
-                os.Exit(1)
-        }
-        ipParts := strings.Split(*hostIP, ".")
-        ip6Parts := strings.Split(*hostIP, ":")
-        if (len(ipParts) != 4 && len(ip6Parts) == 1) ||
-                (len(ip6Parts) > 1 && len(ipParts) > 1) {
-                fmt.Printf("Please pass -ip=W.X.Y.Z or -ip=W:X:Y:Z (for ipv6)\nI received: %v\n", *hostIP)
-                os.Exit(1)
-        } else if len(ip6Parts) > 1 {
-                isIPv6 = true
-                if !strings.HasPrefix(*hostIP, "[") {
-                        *hostIP = "[" + *hostIP
-                }
-                if !strings.HasSuffix(*hostIP, "]") {
-                        *hostIP = *hostIP + "]"
-                }
-        }
-
-        if *neighborhoods > -1 {
-                var err error
-                neighborhood, _, err = GetNeighborhoodAndSeerIP(*hostIP, *neighborhoods)
-                if err != nil {
-                        fmt.Printf("[GetNeighborhood] Error: %v\nNeighborhood: %v\n", err, neighborhood)
-                        os.Exit(1)
-                }
-                fmt.Printf("NEIGHBORHOOD: %v\n", neighborhood)
-        }
-
-        for _, whitelistIP := range strings.Split(*whitelistFlag, ",") {
-                whitelist[whitelistIP] = true
-        }
-
-        if *logCounts {
-                BoolChannels["gossipCounter"] = make(chan bool, 100)
-                BoolChannels["uniqueGossipCounter"] = make(chan bool, 100)
-
-        }
-        gossipCount = 0
-        BoolChannels["seerReady"] = make(chan bool, 100)
-        gossipReceived = make(chan string, 100)
-
-        udpAddress = *hostIP + ":" + *udpPort
-        tcpAddress = *hostIP + ":" + *tcpPort
-
-        /* Guarantee folder paths */
-        SeerDirs["root"] = "seer/" + udpAddress
-        SeerDirs["op"] = SeerDirs["root"] + "/gossip/oplog"
-        SeerDirs["data"] = SeerDirs["root"] + "/gossip/data"
-        SeerDirs["metadata"] = SeerDirs["root"] + "/gossip/metadata"
-
-        os.MkdirAll(SeerDirs["op"], 0777)
-        os.MkdirAll(SeerDirs["data"], 0777)
+type seer struct {
+	Seeds []string
 }
 
-func main() {
-        /* Single cleanup on start. */
-        //TombstoneReaper()
-        //AntiEntropy()
-
-        go UpdateSeerNearness()
-        go UDPServer(*hostIP, *udpPort)
-        go ServiceServer(":" + *tcpPort)
-
-        /*
-           Not really sure how want to build this out.
-           Sort of annoying since need to wait for seed
-           to announce self to peers.
-        */
-        createGossipSocket()
-        /* Must wait for UDPServer to be ready. */
-        ready := <-BoolChannels["seerReady"]
-        if !ready {
-                fmt.Println("UDPServer NOT READY!")
-                os.Exit(1)
-        }
-
-        if *bootstrap != "" {
-                BootStrap(*bootstrap, tcpAddress)
-                ready = <-BoolChannels["seerReady"]
-                fmt.Printf("[Bootstrap] Received seerReady from processSeed(): %v\n", ready)
-                if !ready {
-                        fmt.Println("How am I not ready?")
-                        os.Exit(1)
-                }
-        }
-
-        /* Presumably should be in working state with full set of peers.  So, announce. */
-        HowAmINotMyself()
-
-        /* Run background cleanup on 10 second cycle. */
-        //BackgroundLoop("Janitorial Work", 10, TombstoneReaper, AntiEntropy)
-
-        /* Run background routine for GossipOps() */
-        //BackgroundLoop("Gossip Oplog", 1, GossipOps)
-
-        if *raiseTheDead {
-                /* If bootstrapping, might want to wait for seed before doing this. */
-                RaiseServicesFromTheDead(udpAddress)
-        }
-
-        signaler := make(chan os.Signal, 1)
-        signal.Notify(signaler, os.Interrupt, os.Kill)
-
-        for {
-                select {
-                case <-BoolChannels["gossipCounter"]:
-                        gossipCount += 1
-                        fmt.Printf("[gossipCounter] gossip count: %d\n", gossipCount)
-                case <-BoolChannels["uniqueGossipCounter"]:
-                        uniqueGossipCount += 1
-                case ready := <-BoolChannels["seerReady"]:
-                        if !ready {
-                                /* Someone sent false to seerReady, so shut down. */
-                                fmt.Println("[seerReady] Seer is un-ready. Shutting down.")
-                                os.Exit(1)
-                        }
-                case mySignal := <-signaler:
-                        fmt.Println("Got Signal: ", mySignal)
-                        TombstoneServices(udpAddress)
-                        os.Exit(1)
-                }
-        }
+type metaMessage struct {
+	Timestamp         int64
+	Tombstone         bool `json:",omitempty"`
+	Source            string
+	Message           map[string]interface{} `json:",omitempty"`
+	MessageKey        string                 `json:",omitempty"`
+	IndexedProperties []string               /* 'host' ('nodeId'?), 'service' */
+	Control           string                 `json:",omitempty"`
 }
 
-func createGossipSocket() {
-        c, err := net.ListenPacket("udp", ":0")
-        if err != nil {
-                fmt.Printf("[createGossipSocket] ERR: %s\n", err)
-                os.Exit(1)
-        }
-        gossipSocket = c.(*net.UDPConn)
+// New version of it.
+func New(hostip string, udpport int, tcpport int, s string, seeds []string) *seer {
+	hostIP = hostip
+	tcpPort = tcpport
+	udpPort = udpport
+	udpAddress = fmt.Sprintf("%s:%d", hostIP, udpPort)
+	tcpAddress = fmt.Sprintf("%s:%d", hostIP, tcpPort)
+	secret = s
+	database = "seer_data" + "/" + udpAddress
+	datadir = database + "/data"
+	metadatadir = database + "/metadata"
+
+	return &seer{Seeds: seeds}
 }
 
-var SendGossip = func(gossip string, seerAddr string) {
-        seer, err := net.ResolveUDPAddr("udp", seerAddr)
-        if err != nil {
-                fmt.Printf("[SendGossip] ERR: %s\n", err)
-                return
-        }
-        _, err = ExtractTSFromJSON(gossip)
-        if err != nil && err.Error() == "no TS" {
-                newTs := fmt.Sprintf(`,"TS":%d}`, MS(time.Now()))
-                gossip = gossip[:len(gossip)-1] + newTs
-        }
-        seerPath, err := ExtractSeerPathFromJSON(gossip, false)
-        if err != nil && err.Error() == "no SeerPath" {
-                seerPath = fmt.Sprintf(`,"SeerPath":["%s"]}`, udpAddress)
-                gossip = gossip[:len(gossip)-1] + seerPath
-        } else if strings.LastIndex(seerPath, udpAddress) == -1 {
-                /* Do not want to add myself to myself. */
-                gossip = UpdateSeerPath(gossip, `"`+udpAddress+`"`)
-        }
-        fmt.Printf("[SendGossip] gossip: %s\n    TO: %s\n", gossip, seer)
-        gossipSocket.WriteToUDP([]byte(gossip), seer)
+// Run it.
+func (s *seer) Run() {
+	signaler := make(chan os.Signal, 1)
+	signal.Notify(signaler, os.Interrupt, os.Kill)
+
+	createUDPSendSocket()
+
+	messager := make(chan string, 100)
+	go udpServer(udpAddress, messager)
+	go HttpServer(fmt.Sprintf(":%d", tcpPort))
+
+	msg := <-messager
+	if msg != "udpready" {
+		fmt.Println("First message from messager should have been 'udpready'. Received: ", msg)
+		os.Exit(1)
+	}
+
+	port := fmt.Sprintf("%d", udpPort)
+	mm := joinMessage(udpAddress, hostIP, port)
+
+	// Join self.
+	persistMessage(mm)
+
+	mm.Control = "seedee"
+	m := encode(mm, udpAddress)
+	for _, peer := range s.Seeds {
+		if len(peer) < 3 {
+			continue
+		}
+		sendMessage(m, peer)
+	}
+
+	BackgroundLoop("Tombstone Reaper", 24*60*60, tombstoneReaper)
+
+	for {
+		select {
+		case m := <-messager:
+			fmt.Println("[message]: ", m)
+		case mySignal := <-signaler:
+			fmt.Println("[signal]: ", mySignal)
+			// Leaving group.
+			lm := leaveMessage(udpAddress, hostIP, port)
+			gossip(lm)
+
+			os.Exit(1)
+		}
+	}
 }
 
-func TombstoneServices(seerAddress string) {
-        /* For all my services, Gossip out Tombstones. */
-        myServices, _ := getGossipArray(seerAddress, "host", "data")
-        for _, service := range myServices {
-                gossip := RemoveTombstone(RemoveSeerPath(UpdateTS(service)))
-                gossip = fmt.Sprintf(`%s,"Tombstone":true}`, gossip[:len(gossip)-1])
-                ProcessGossip(gossip, *hostIP, *hostIP)
-        }
+func processMessage(m string) {
+	fmt.Printf("[message]: %s\n", m)
+	/* Send */
+
+	var mm metaMessage
+	json.Unmarshal([]byte(m), &mm)
+	if !auth(mm) {
+		fmt.Printf("Auth Failed: %s\n", m)
+		return
+	}
+
+	if mm.Control != "" {
+		mm = processControlMessage(mm)
+	}
+	if mm.Message == nil {
+		fmt.Printf("I do not process empty mw.Messages: %s\n", m)
+		return
+	}
+
+	// Guess should stuff in syncronization for this... or use channel.
+	recencyKey := fmt.Sprintf("%s_%s_%s", mm.Message["Name"], mm.Message["Type"], mm.Message["Port"])
+	fmt.Printf("recencyKey: %s, mw: %v\n", recencyKey, mm)
+	if recentMessages[recencyKey] >= mm.Timestamp {
+		fmt.Printf("OLD MESSAGE!!mm.Timestamp < recentMessages Timestamp:\n%d\n%d\n", mm.Timestamp, recentMessages[recencyKey])
+		return
+	}
+	fmt.Printf("NEW MESSAGE!!mw.Timestamp > recentMessages Timestamp:\n%d\n%d\n", mm.Timestamp, recentMessages[recencyKey])
+	recentMessages[recencyKey] = mm.Timestamp
+
+	persistMessage(mm)
+
+	gossip(mm)
 }
 
-func RaiseServicesFromTheDead(seerAddress string) {
-        myServices, _ := getGossipArray(seerAddress, "host", "data")
-        for _, service := range myServices {
-                gossip := RemoveTombstone(RemoveSeerPath(UpdateTS(service)))
-                ProcessGossip(gossip, *hostIP, *hostIP)
-        }
+func processControlMessage(mm metaMessage) metaMessage {
+	switch mm.Control {
+	case "seedee":
+		randWait := rand.Intn(1000)
+		time.Sleep(time.Duration(randWait) * time.Millisecond)
+
+		seedu := metaMessage{}
+		seedu.Timestamp = MS(Now())
+		seedu.Control = "seedu"
+
+		sendMessage(encode(seedu, udpAddress), mm.Source)
+
+		// Do not want 'seedu's from all peers.
+		// But would like to gossip 'join' to rest of peers.
+		mm.Control = ""
+	case "seedu":
+		if seeded {
+			break
+		}
+		seedme := metaMessage{}
+		seedme.Timestamp = MS(Now())
+		seedme.Control = "seedme"
+
+		sendMessage(encode(seedme, udpAddress), mm.Source)
+	case "seedme":
+		// Proper way is to directly send the file contents.
+		peers := getPeers()
+		for _, peer := range peers {
+			var seed metaMessage
+			json.Unmarshal(get("host", peer), &seed)
+			if seed.Message == nil {
+				fmt.Println("seed.Message is nil! skipping.")
+				continue
+			}
+			seed.Control = "seed"
+			sendMessage(encode(seed, udpAddress), mm.Source)
+		}
+	case "seed":
+		// If I receive one 'seed' message, simply presume I will be seeded with rest.
+		// Anti-entropy can handle the rest.
+		seeded = true
+	}
+
+	return mm
 }
 
-func HowAmINotMyself() {
-        gossip := fmt.Sprintf(`{"SeerAddr":"%s","TS":%d}`, udpAddress, MS(time.Now()))
-        /* Gossip self to self which will then get GossipGossip-ed. */
-        ProcessGossip(gossip, *hostIP, *hostIP)
+func persistMessage(mm metaMessage) {
+	// Most likely will want extra-paranoid timestamp check in here.
+	m, _ := json.Marshal(mm)
+	for _, key := range mm.IndexedProperties {
+		index := mm.Message[key].(string)
+		if index == "" {
+			// Don't want to write empty string.
+			continue
+		}
+		key = strings.ToLower(key)
+		lazyWriteFile(datadir+"/"+key, index, m)
+	}
 }
 
-func BootStrap(seeder string, seedee string) {
-        /* Sexier */
-        if seeder == "magic" {
-                /* Broadcast to whoever.  Must still handle handshake so that not all Seers send their data. */
-                seeder = fmt.Sprintf("255.255.255.255:%s", *udpPort)
-        }
-        if strings.HasPrefix(seeder, "255.") {
-                /* If Broadcasting, must send udpAddress so they can send back "SeedYou" query. */
-                seedee = udpAddress
-        }
-        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, seedee)
-        SendGossip(message, seeder)
+func auth(mm metaMessage) bool {
+	key := messageKey(mm)
+	return key == mm.MessageKey
 }
 
-func FreshGossip(filePath string, newTS int64) (bool, string) {
-        serviceData, err := ioutil.ReadFile(filePath)
-        if err != nil {
-                fmt.Printf("[FreshGossip] Could not read existing gossip. filePath: [%s]\n", filePath)
-                return true, ""
-        }
-        currentTS, err := ExtractTSFromJSON(string(serviceData))
-        if err != nil {
-                fmt.Printf("[FreshGossip] Not TS found. serviceData: [%s]\n", string(serviceData))
-        }
-        return newTS > currentTS, string(serviceData)
+func messageKey(mm metaMessage) string {
+	mm.MessageKey = ""
+	m, _ := json.Marshal(mm)
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write(m)
+	return base64.StdEncoding.EncodeToString(h.Sum(nil))
 }
 
-func ExtractSeerPathFromJSON(gossip string, trimquotes bool) (string, error) {
-        seerPath := seerPathRegexp.FindStringSubmatch(gossip)
-        if len(seerPath) == 6 {
-                if trimquotes {
-                        seerPath[3] = strings.Replace(seerPath[3], `"`, ``, -1)
-                }
-                return seerPath[3], nil
-        }
-        return "", errors.New("no SeerPath")
+func encode(mm metaMessage, source string) []byte {
+	mm.Source = source
+	mm.MessageKey = messageKey(mm)
+	marshaledMessage, _ := json.Marshal(mm)
+	return marshaledMessage
 }
 
-func UpdateSeerPath(gossip string, newpathitems string) string {
-        if newpathitems != "" {
-                gossip = seerPathRegexp.ReplaceAllString(gossip, `${1}${2}`+newpathitems+`,${3}${4}${5}`)
-        }
-        return gossip
+func joinMessage(source string, ip string, port string) metaMessage {
+	mm := metaMessage{}
+	mm.Message = map[string]interface{}{}
+	mm.Timestamp = MS(Now())
+	mm.Source = source
+	mm.Message["Name"] = ip
+	mm.Message["Port"] = port
+	mm.Message["Host"] = fmt.Sprintf("%s:%s", mm.Message["Name"], mm.Message["Port"])
+	mm.IndexedProperties = []string{"Host"}
+	return mm
 }
 
-func ReplaceSeerPath(gossip string, newpathitems string) string {
-        if newpathitems != "" {
-                gossip = seerPathRegexp.ReplaceAllString(gossip, `${1}${2}`+newpathitems+`${4}${5}`)
-        }
-        return gossip
+func leaveMessage(source string, ip string, port string) metaMessage {
+	mm := joinMessage(source, ip, port)
+	mm.Tombstone = true
+	return mm
 }
 
-func RemoveSeerPath(gossip string) string {
-        /* Guess this remove can be slow since happens infrequently. */
-        gossip = seerPathRegexp.ReplaceAllString(gossip, `${5}`)
-        for _, replaceme := range []string{`{,`, `,,`, `,}`} {
-                with := strings.Replace(replaceme, `,`, ``, 1)
-                gossip = strings.Replace(gossip, replaceme, with, 1)
-        }
-        return gossip
+func gossip(mm metaMessage) {
+	m := encode(mm, udpAddress)
+	// Choose N hosts to send to.
+	peers := getPeers()
+
+	gossipHosts := chooseNFromArrayNonDeterministically(5, peers)
+	for _, peer := range gossipHosts {
+		sendMessage(m, peer)
+	}
 }
 
-func RemoveTombstone(gossip string) string {
-        /* Infrequent, so can be "slow". */
-        gossip = tombstoneRegexp.ReplaceAllString(gossip, ``)
-        for _, replaceme := range []string{`{,`, `,,`, `,}`} {
-                with := strings.Replace(replaceme, `,`, ``, 1)
-                gossip = strings.Replace(gossip, replaceme, with, 1)
-        }
-        return gossip
+func get(path string, key string) []byte {
+	value, _ := ioutil.ReadFile(datadir + "/" + path + "/" + key)
+	if strings.Contains(string(value), `Tombstone":true`) {
+		return nil
+	}
+	return value
 }
 
-func ExtractTSFromJSON(gossip string) (int64, error) {
-        /* Looks for "TS" in JSON like:
-           {"TS":<numbers>,...}
-           {...,"TS":<numbers>}
-           {...,"TS":<numbers>,...}
-        */
-        ts := tsRegexp.FindStringSubmatch(gossip)
-        if len(ts) == 5 {
-                return strconv.ParseInt(ts[3], 10, 64)
-        }
-        return 0, errors.New("no TS")
+var getPeers = func() []string {
+	d, _ := os.Open(datadir + "/host")
+	hosts, _ := d.Readdirnames(-1)
+	return hosts
 }
 
-func UpdateTS(gossip string) string {
-        newTS := fmt.Sprintf("%d", MS(Now()))
-        return tsRegexp.ReplaceAllString(gossip, `${1}${2}`+newTS+`${4}`)
+func getKeyPaths() []string {
+	keypaths := []string{}
+	indexedProps, _ := ioutil.ReadDir(datadir)
+	for _, indexedProp := range indexedProps {
+		if !indexedProp.IsDir() {
+			// Looking for directories holding indexed items.
+			continue
+		}
+		path := datadir + "/" + indexedProp.Name()
+		keys, _ := ioutil.ReadDir(path)
+		for _, key := range keys {
+			if key.IsDir() {
+				// Looking for files here.
+				continue
+			}
+			keypaths = append(keypaths, path+"/"+key.Name())
+		}
+	}
+	return keypaths
 }
 
-func ChooseNFromArray(n int, array []string) []string {
-        m := len(array)
-        if m > 4*n {
-                return ChooseNFromArrayNonDeterministically(n, array)
-        }
-        indexArray := make([]int, m)
-        for i := 0; i < m; i++ {
-                indexArray[i] = i
-        }
-        intSlice := sort.IntSlice(indexArray)
-        /* Do the Knuth shuffle. */
-        /* Can this really be better than randomly choosing over and over? */
-        i := m
-        for i > 0 {
-                i = i - 1
-                j := rand.Intn(i + 1)
-                intSlice.Swap(i, j)
-        }
-        tracker := map[string]bool{}
-        counter := 0
-        chosenItems := make([]string, 0, n)
-        for _, arrayIndex := range intSlice {
-                item := array[arrayIndex]
-                if tracker[item] {
-                        continue
-                }
-                chosenItems = append(chosenItems, item)
-                tracker[item] = true
-                counter += 1
-                if counter == n {
-                        break
-                }
-        }
-        return chosenItems
+func extractHostIPandPort(udpaddress string) (string, string, error) {
+	parts := strings.Split(udpaddress, ":")
+	if len(parts) != 2 {
+		return "", "", errors.New(fmt.Sprintf("Address should be of format <hostip>:<port>. Got: %s", udpaddress))
+	}
+	hostip := parts[0]
+	port := parts[1]
+	if hostip == "" || port == "" {
+		return hostip, port, errors.New(fmt.Sprintf("Hostip and Port should be non-empty. Hostip: %s, Port: %s", hostip, port))
+	}
+	return hostip, port, nil
 }
 
-func ChooseNFromArrayNonDeterministically(n int, array []string) []string {
-        chosenItems := make([]string, 0, n)
-        tracker := map[string]bool{}
-        counter := 0
-        tries := 0
-        m := len(array)
-        for counter < n {
-                tries += 1
-                if tries > MaxInt(m, 4*n) {
-                        /* Do not wish to try forever. */
-                        break
-                }
-                item := array[rand.Intn(m)]
-                if tracker[item] {
-                        continue
-                }
-                chosenItems = append(chosenItems, item)
-                tracker[item] = true
-                counter += 1
-        }
-        return chosenItems
+/*******************************************************************************
+    Background Workers
+*******************************************************************************/
+
+func BackgroundLoop(name string, seconds int, fns ...func()) {
+	go func() {
+		for {
+			time.Sleep(time.Duration(seconds) * time.Second)
+			fmt.Printf("\n[%s] : LOOPING : %s\n", time.Now(), name)
+			for _, f := range fns {
+				f()
+			}
+		}
+	}()
 }
 
-func GossipGossip(gossip string) {
-        fmt.Printf("[GossipGossip] Gossiping Gossip: %s\n", gossip)
-        seerPath, _ := ExtractSeerPathFromJSON(gossip, true)
-        seerPeers, _ := GetSeerPeers(udpAddress, seerPath)
-        if len(seerPeers) == 0 {
-                fmt.Println("[GossipGossip] No peers! No one to gossip with.")
-                return
-        }
-        gossipees := int(math.Log2(float64(len(seerPeers)))) + 1
-        fmt.Printf("Gossipees: %d\nSeerPeers: %v\n", gossipees, seerPeers)
-
-        /*
-           Normalizing by nearness.  Increases the probability that Seer Peer will try to message a "Hub" that it is "touching".
-           And, decreases probability that Seer Peer will try to message a peer in another neighborhood.
-
-           Highly likely this is useless being baked in.  Probably want vanilla random selection, and then handle special case of "Hub" peers.
-           Mainly, if the topology is broken out into sub-neighborhoods, what is the value of each neighborhood knowing about the other?
-           Presumably, the peers cannot see across the neighborhoods.. so.. why should they attempt to be aware of eachother's services?
-
-           More useful for a generalized key-value store.
-        */
-        normalizedSeerPeers := NormalizeSeerPeersByNearness(seerPeers)
-        randSeerPeers := ChooseNFromArray(gossipees, normalizedSeerPeers)
-        for _, seerPeer := range randSeerPeers {
-                SendGossip(gossip, seerPeer)
-        }
+func tombstoneReaper() {
+	keypaths := getKeyPaths()
+	for _, keypath := range keypaths {
+		value, err := ioutil.ReadFile(keypath)
+		if err != nil {
+			fmt.Printf("keypath: %s, err: %s\n", keypath, err)
+			continue
+		}
+		var mm metaMessage
+		json.Unmarshal(value, &mm)
+		// If Tombstoned over 24 hours, remove it.
+		if mm.Tombstone && (MS(Now())-mm.Timestamp) > 24*60*60*1000 {
+			os.RemoveAll(keypath)
+		}
+	}
 }
 
-func GetSeerPeers(filters ...string) ([]string, map[string]bool) {
-        seerHostDir, err := os.Open(SeerDirs["data"] + "/host")
-        if err != nil {
-                fmt.Printf("[GetSeerPeers] ERR: %s\n", err)
-                return []string{}, map[string]bool{}
-        }
+/*******************************************************************************
+    UDP Send
+*******************************************************************************/
 
-        seerPeers, err := seerHostDir.Readdirnames(-1)
-        seerHostDir.Close()
-        if err != nil {
-                fmt.Printf("[GetSeerPeers] ERR: %s\n", err)
-                return []string{}, map[string]bool{}
-        }
-        seerMap := map[string]bool{}
-        for _, seerPeer := range seerPeers {
-                seerMap[seerPeer] = true
-        }
-        for _, filter := range filters {
-                for _, seerPeer := range strings.Split(filter, ",") {
-                        delete(seerMap, seerPeer)
-                }
-        }
-        seerPeers = make([]string, 0, len(seerMap))
-        for seerPeer, _ := range seerMap {
-                peer := true
-                /* Check neighborhood and whitelist */
-                if neighborhood > -1 {
-                        nhbd, seerIP, _ := GetNeighborhoodAndSeerIP(seerPeer, *neighborhoods)
-                        if nhbd != neighborhood {
-                                peer = false
-                        }
-                        /* Guess could be point in future where whitelist will need to exist outside Neighborhood check. */
-                        if whitelist[seerIP] {
-                                peer = true
-                        }
-                }
-                if peer {
-                        seerPeers = append(seerPeers, seerPeer)
-                }
-        }
-        return seerPeers, seerMap
+func createUDPSendSocket() {
+	c, err := net.ListenPacket("udp", ":0")
+	if err != nil {
+		fmt.Printf("[createUDPSendSocket] ERR: %s\n", err)
+		os.Exit(1)
+	}
+	udpSendSocket = c.(*net.UDPConn)
 }
 
-func NormalizeSeerPeersByNearness(seerPeers []string) []string {
-        /* Most likely plenty of more-optimal approaches, but this feels most immediately clear. */
-        minval := 0
-        for _, seerPeer := range seerPeers {
-                minval = MinInt(minval, seerNearness[seerPeer])
-        }
-        normalizedPeers := make([]string, 0, len(seerPeers))
-        for _, seerPeer := range seerPeers {
-                indexMultiplier := 1 + AbsInt(minval) + seerNearness[seerPeer]
-                /* "Least Near" peer will only have its index appear once. */
-                for i := 0; i < indexMultiplier; i++ {
-                        normalizedPeers = append(normalizedPeers, seerPeer)
-                }
-        }
-        return normalizedPeers
-
-}
-
-func UpdateSeerNearness() {
-        for {
-                select {
-                case gossip := <-gossipReceived:
-                        seerPeers, _ := ExtractSeerPathFromJSON(gossip, true)
-                        for index, seerPeer := range strings.Split(seerPeers, ",") {
-                                if seerPeer == "" {
-                                        continue
-                                } else if index == 0 {
-                                        seerNearness[seerPeer] += 1
-                                } else if index == 1 {
-                                        seerNearness[seerPeer] -= 1
-                                } else {
-                                        // Postponing change until clear on implications of adding 3rd degree peers to seerNearness.
-                                        //seerNearness[seerPeer] += 0
-                                }
-                        }
-                        fmt.Printf("[UpdateSeerConnectivity] seerNearness: %#v\n", seerNearness)
-                }
-        }
-}
-
-func GetNeighborhoodAndSeerIP(seerIP string, nhbds int) (int, string, error) {
-        portIndex := strings.Index(seerIP, ":")
-        if portIndex > -1 {
-                seerIP = seerIP[:portIndex]
-        }
-        ipParts := strings.Split(seerIP, ".")
-        nbhdPart, err := strconv.ParseInt(ipParts[3], 10, 0)
-        nhbd := int(nbhdPart) % nhbds
-        return nhbd, seerIP, err
-}
-
-func ProcessSeerRequest(decodedGossip Gossip, destinationIp string) {
-        if decodedGossip.SeerRequest == "SeedMe" && strings.HasPrefix(destinationIp, "255.") {
-                /* If receive broadcast, send back "SeedYou" query. */
-                if udpAddress == decodedGossip.SeerAddr {
-                        /* No need to seed oneself. */
-                        /* Might be sexier to have SendGossip() block gossip to self? */
-                        return
-                }
-                message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedYou"}`, udpAddress)
-                SendGossip(message, decodedGossip.SeerAddr)
-        } else if decodedGossip.SeerRequest == "SeedMe" {
-                /* Received direct "SeedMe" request.  Send seed. */
-                tarredGossipFile := fmt.Sprintf("/tmp/seer_generated_seed_%s_%s.tar.gz", udpAddress, decodedGossip.SeerAddr)
-                err := createTarGz(tarredGossipFile, SeerDirs["data"]+"/service", SeerDirs["data"]+"/host")
-                if err != nil {
-                        fmt.Printf("[SeedMe] Failed to create tar.gz. ERR: %s\n", err)
-                        return
-                }
-                _ = sendSeed(decodedGossip.SeerAddr, tarredGossipFile)
-        } else if decodedGossip.SeerRequest == "SeedYou" {
-                /* Seer thinks I want a Seed.. do I? */
-                if time.Now().UnixNano() >= lastSeedTS+1000000000*30 {
-                        fmt.Printf("[SeedYou] Requesting Seed!\n  NOW - THEN = %s", time.Now().UnixNano()-lastSeedTS)
-                        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"SeedMe"}`, tcpAddress)
-                        SendGossip(message, decodedGossip.SeerAddr)
-                } else {
-                        fmt.Printf("[SeedYou] No need to seed!\n  NOW - THEN = %s", time.Now().UnixNano()-lastSeedTS)
-                }
-        } else if decodedGossip.SeerRequest == "RequestMetadata" {
-                /* For all peers, send {"SeerAddr":udpAddress,"SeerRequest":"Metadata"} */
-                requestMetadata()
-                /* Generate and process my own metadata. */
-                metadata := generateMetadata()
-                message := fmt.Sprintf(`{"SeerAddr":"%s","ServiceName":"Seer","Metadata":%s,"TS":%d}`, udpAddress, metadata, MS(time.Now()))
-                ProcessGossip(message, *hostIP, *hostIP)
-        } else if decodedGossip.SeerRequest == "Metadata" {
-                metadata := generateMetadata()
-                message := fmt.Sprintf(`{"SeerAddr":"%s","ServiceName":"Seer","Metadata":%s}`, udpAddress, metadata)
-                SendGossip(message, decodedGossip.SeerAddr)
-        }
-        return
-}
-
-func ProcessGossip(gossip string, sourceIp string, destinationIp string) {
-        /* Implement simulated Message Loss and Delays here. */
-        if *messageLoss > 0 && rand.Intn(100) < *messageLoss {
-                fmt.Printf("[ProcessGossip] Simulated message loss of %d%\n", *messageLoss)
-                return
-        }
-        if *messageDelay > 0 {
-                fmt.Printf("[ProcessGossip] messagedelay of %dms\n", *messageDelay)
-                time.Sleep(time.Duration(*messageDelay) * time.Millisecond)
-        }
-        /* Also, log gossip counts here?  Or at server? */
-        if *logCounts {
-                /* Inc some global counter? */
-                BoolChannels["gossipCounter"] <- true
-        }
-        decodedGossip, err := VerifyGossip(gossip)
-
-        if decodedGossip.SeerRequest != "" {
-                ProcessSeerRequest(decodedGossip, destinationIp)
-                return
-        }
-        if err != nil || decodedGossip.SeerAddr == "" {
-                fmt.Printf("\nBad Gossip!: %s\nErr: %s\nDestination: %s\n", gossip, err, destinationIp)
-                return
-        }
-        /* Write to oplog. opName limits updates from single host to 10 per nanosecond.. */
-        opName := fmt.Sprintf("%d_%s_%d", time.Now().UnixNano(), decodedGossip.SeerAddr, (rand.Int()%10)+10)
-        _ = LazyWriteFile(SeerDirs["op"], opName+".op", []byte(gossip))
-        /* Save it. */
-        put, fresherGossip := PutGossip(gossip, decodedGossip)
-
-        gossipReceived <- gossip
-
-        /* put == true implies gossip was "fresh".  Thus, spread the good news. */
-        if put {
-                if *logCounts {
-                        BoolChannels["uniqueGossipCounter"] <- true
-                }
-                /* Spread the word? Or, use GossipOps()? */
-                GossipGossip(gossip)
-        } else {
-                regossip := ReGossip(fresherGossip, gossip)
-                if regossip != "" {
-                        GossipGossip(regossip)
-                }
-        }
-}
-
-func VerifyGossip(gossip string) (Gossip, error) {
-        /*
-           { "SeerAddr" : "remotehost1:9999",
-             "ServiceName" : "mongod",
-             "ServiceAddr" : "remotehost1:2107",
-             "TS" : 123312123123 }
-        */
-        var g Gossip
-        err := json.Unmarshal([]byte(gossip), &g)
-
-        /* Reflection feels stupid, so bruteforcing it. */
-        /* A Heartbeat is just {SeerAddr,ts}.. so that's all need check. */
-        errorStr := ""
-        if g.SeerAddr == "" {
-                errorStr += ",SeerAddr"
-        }
-        if g.TS == 0 {
-                errorStr += ",TS"
-        }
-        if err == nil && errorStr != "" {
-                err = errors.New(fmt.Sprintf("[%s] are missing!", errorStr[1:len(errorStr)]))
-        }
-        return g, err
-}
-
-func PutGossip(gossip string, decodedGossip Gossip) (bool, string) {
-        /* Only checking SeerServiceDir for current TS. */
-        /* Current code has odd side effect of allowing Seer data to exist for host even if we missed initial Seer HELO gossip. */
-        /* We leave it to AntiEntropy to patch that up. */
-        if decodedGossip.ServiceName == "" {
-                decodedGossip.ServiceName = "Seer"
-        }
-        gossipType := "data"
-        if decodedGossip.Metadata != nil {
-                gossipType = "metadata"
-        }
-        fresh, currentGossip := FreshGossip(SeerDirs[gossipType]+"/service/"+decodedGossip.ServiceName+"/"+decodedGossip.SeerAddr, decodedGossip.TS)
-        if !fresh {
-                fmt.Printf("[Old Assed Gossip] I ain't writing that.\n[Gossip]: %s\n", gossip)
-                return false, currentGossip
-        }
-        _ = LazyWriteFile(SeerDirs[gossipType]+"/service/"+decodedGossip.ServiceName, decodedGossip.SeerAddr, []byte(gossip))
-        _ = LazyWriteFile(SeerDirs[gossipType]+"/host/"+decodedGossip.SeerAddr, decodedGossip.ServiceName, []byte(gossip))
-        if gossipType == "metadata" {
-                /* For now, don't want metadata gossipped all over the place. */
-                return false, ""
-        }
-        return true, ""
-}
-
-func ReGossip(fresherGossip string, gossip string) string {
-        regossip := ""
-        if fresherGossip != "" && !strings.Contains(gossip, `"ReGossip":true`) {
-                /* Merge SeerPaths and re-gossip. */
-                gossip = gossip[:len(gossip)-1] + `,"ReGossip":true}`
-                seerPath, _ := ExtractSeerPathFromJSON(fresherGossip, false)
-                otherSeerPath, _ := ExtractSeerPathFromJSON(gossip, false)
-                mergedSeerPath := MergeDelimitedStrings(seerPath, otherSeerPath)
-                regossip = ReplaceSeerPath(gossip, mergedSeerPath)
-        }
-        return regossip
-}
-
-func LazyWriteFile(folderName string, fileName string, data []byte) error {
-        err := ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
-        if err != nil {
-                os.MkdirAll(folderName, 0777)
-                err = ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
-        }
-        if err != nil {
-                fmt.Printf("[LazyWriteFile] Could not WriteFile: %s\nErr: %s\n", folderName+"/"+fileName, err)
-        }
-        return err
-}
-
-func GossipOps() {
-        /*
-           1. Pick N random peers.
-           2. Gossip all ops that have occured since last GossipOps() to peers.
-           3. Ops examined by file create date and encoded "ts"?
-        */
-        fmt.Printf("[GossipOps] I grab all (plus some padding?) ops that have appeared since last GossipOps()")
+var sendMessage = func(message []byte, destination string) {
+	time.Sleep(25 * time.Millisecond)
+	udpAddr, err := net.ResolveUDPAddr("udp", destination)
+	fmt.Printf("peer: %v, udp: %v, err: %s\n", destination, udpAddr, err)
+	udpSendSocket.WriteToUDP(message, udpAddr)
 }
 
 /*******************************************************************************
     UDP Server
 *******************************************************************************/
 
-func UDPServer(ipAddress string, port string) {
-        /* If UDPServer dies, I don't want to live anymore. */
-        defer func() { BoolChannels["seerReady"] <- false }()
+func udpServer(address string, messager chan string) {
+	var err error
+	var c net.PacketConn
 
-        /*
-           "Have" to hack this since want to receive broadcast packets.. yet.. they don't appear to show up
-           if net.ListenPacket() gets called on specific IP address?
-           Really annoying since prevents listening on same port using different IP addresses on same machine.
-           Thus, I have added more hack.
-        */
-        var err error
-        var c net.PacketConn
-
-        if *listenBroadcast {
-                c, err = net.ListenPacket("udp", ":"+port)
-        } else {
-                c, err = net.ListenPacket("udp", udpAddress)
-        }
-        if err != nil {
-                fmt.Printf("ListenPacket failed! %v, udpAddress: %s\n", err, udpAddress)
-                log.Fatal(err)
-        }
-        defer c.Close()
-        if isIPv6 {
-                UDP6Listen(c)
-        } else {
-                UDP4Listen(c)
-        }
-}
-
-func UDP4Listen(c net.PacketConn) {
-        udpLn := ipv4.NewPacketConn(c)
-        err := udpLn.SetControlMessage(ipv4.FlagDst, true)
-        if err != nil {
-                log.Fatal(err)
-        }
-        /* Assuming that MTU can't be below 576, which implies one has 508 bytes for payload after overhead. */
-        udpBuff := make([]byte, 508)
-        BoolChannels["seerReady"] <- true
-        for {
-                n, cm, _, err := udpLn.ReadFrom(udpBuff)
-                if err != nil {
-                        log.Fatal(err)
-                }
-                if cm.Dst.String() == *hostIP || "["+cm.Dst.String()+"]" == *hostIP || strings.HasPrefix(cm.Dst.String(), "255.") {
-                        /* Only process broadcast traffic OR traffic destined for me. */
-                        /* Only necessary when listenbroadcast=true */
-                        message := strings.Trim(string(udpBuff[:n]), "\n")
-                        if message == "exit" {
-                                return
-                        }
-                        go ProcessGossip(message, cm.Src.String(), cm.Dst.String())
-                }
-        }
-}
-
-func UDP6Listen(c net.PacketConn) {
-        udpLn := ipv6.NewPacketConn(c)
-        err := udpLn.SetControlMessage(ipv6.FlagDst, true)
-        if err != nil {
-                log.Fatal(err)
-        }
-        /* Assuming that MTU can't be below 576, which implies one has 508 bytes for payload after overhead. */
-        udpBuff := make([]byte, 508)
-        BoolChannels["seerReady"] <- true
-        for {
-                n, cm, _, err := udpLn.ReadFrom(udpBuff)
-                if err != nil {
-                        log.Fatal(err)
-                }
-                if cm.Dst.String() == *hostIP || "["+cm.Dst.String()+"]" == *hostIP || strings.HasPrefix(cm.Dst.String(), "255.") {
-                        /* Only process broadcast traffic OR traffic destined for me. */
-                        /* Only necessary when listenbroadcast=true */
-                        message := strings.Trim(string(udpBuff[:n]), "\n")
-                        if message == "exit" {
-                                return
-                        }
-                        go ProcessGossip(message, cm.Src.String(), cm.Dst.String())
-                }
-        }
+	c, err = net.ListenPacket("udp", address)
+	if err != nil {
+		fmt.Printf("ListenPacket failed! %v, udpAddress: %s\n", err, address)
+		log.Fatal(err)
+	}
+	defer c.Close()
+	messager <- "udpready"
+	/* Assuming that MTU can't be below 576, which implies one has 508 bytes for payload after overhead. */
+	udpBuff := make([]byte, 508)
+	for {
+		n, _, err := c.ReadFrom(udpBuff)
+		if err != nil {
+			log.Fatal(err)
+		}
+		message := strings.Trim(string(udpBuff[:n]), "\n")
+		if message == "exit" {
+			return
+		}
+		go processMessage(message)
+	}
 }
 
 /*******************************************************************************
-    HTTP related and seeding functions.
-*******************************************************************************/
+    HTTP Server
+********************************************************************************/
 
-func ServiceServer(address string) {
-        /* If HTTPServer dies, guess I don't want to live anymore either. */
-        defer func() { BoolChannels["seerReady"] <- false }()
-
-        http.HandleFunc("/", ServiceHandler)
-        http.ListenAndServe(address, nil)
+func HttpServer(address string) {
+	http.HandleFunc("/", HttpHandler)
+	http.ListenAndServe(address, nil)
 }
 
-func errorResponse(w http.ResponseWriter, message string) {
-        w.WriteHeader(http.StatusInternalServerError)
-        w.Write([]byte(message))
-}
-
-func ServiceHandler(w http.ResponseWriter, r *http.Request) {
-        if !(strings.HasPrefix(r.Host, "127.0.0.1") ||
-                strings.HasPrefix(r.Host, "[::1]") ||
-                strings.HasPrefix(r.Host, *hostIP)) {
-                // Only handle requests sent to hostIP or localhost.
-                return
-        }
-
-        requestTypeMap := map[string]string{
-                "host":              "host",
-                "seer":              "host",
-                "service":           "service",
-                "metadata":          "metadata",
-                "data":              "data",
-                "op":                "op",
-                "aggregateMetadata": "aggregateMetadata",
-                "generateMetadata":  "generateMetadata",
-        }
-        /* Allow GET by 'service' or 'seeraddr' */
-        splitURL := strings.Split(r.URL.Path, "/")
-
-        switch r.Method {
-        case "GET":
-                if requestTypeMap[splitURL[1]] == "" {
-                        errorResponse(w, "Please query for 'seer', 'service', 'metadata', or 'op'")
-                        return
-                }
-                jsonPayload := ""
-                if splitURL[1] == "aggregateMetadata" {
-                        /* Do thangs. */
-                        aggregate, _ := json.MarshalIndent(aggregateMetadata(), "", "    ")
-                        jsonPayload = string(aggregate) + "\n"
-                } else if splitURL[1] == "generateMetadata" {
-                        jsonPayload = generateMetadata()
-                } else {
-                        dataType := "data"
-                        requestType := requestTypeMap[splitURL[1]]
-                        name := splitURL[2]
-                        if splitURL[1] == "metadata" || splitURL[1] == "data" {
-                                if requestTypeMap[splitURL[2]] == "" {
-                                        errorResponse(w, "Please query for 'seer', 'service', 'metadata', or 'op'")
-                                        return
-                                }
-                                dataType = splitURL[1]
-                                requestType = requestTypeMap[splitURL[2]]
-                                name = splitURL[3]
-                        }
-                        jsonPayload = getServiceData(name, requestType, dataType)
-                }
-                fmt.Fprintf(w, jsonPayload)
-        case "PUT":
-                if splitURL[1] == "seed" {
-                        path := fmt.Sprintf("/tmp/seer_received_seed_%s_%d.tar.gz", udpAddress, MS(time.Now()))
-                        file, err := os.Create(path)
-                        if err != nil {
-                                errorResponse(w, err.Error())
-                                return
-                        }
-                        defer file.Close()
-                        _, err = io.Copy(file, r.Body)
-                        if err != nil {
-                                errorResponse(w, err.Error())
-                                return
-                        }
-                        /* Made it here.. now need to do go routine to unzip. */
-                        go processSeed(path)
-                } else if splitURL[1] == "service" {
-                        if !(strings.HasPrefix(r.Host, "127.0.0.1") ||
-                                strings.HasPrefix(r.Host, "[::1]")) {
-                                // Service updates only accepted on localhost.
-                                return
-                        }
-                        b := bytes.NewBuffer(nil)
-                        _, err := io.Copy(b, r.Body)
-                        gossip := b.String()
-
-                        decodedGossip, _ := VerifyGossip(gossip)
-                        decodedGossip.TS = MS(Now())
-                        decodedGossip.SeerAddr = udpAddress
-                        if !strings.HasPrefix(decodedGossip.ServiceAddr, *hostIP) {
-                                // For the sake of K.I.S.S., reject services that don't run on my defined hostIP?
-                                // What if there are other public IPs?
-                                // Is the iron fist right in this context?
-                                errorResponse(w, "'ServiceAddr' in JSON payload must match Seer IP (whatever was passed in with --ip=W.X.Y.Z).")
-                                return
-                        }
-                        if decodedGossip.ServiceName == "" {
-                                errorResponse(w, "Please include 'ServiceName' in JSON payload.")
-                                return
-                        }
-                        marshaledGossip, err := json.Marshal(decodedGossip)
-                        if err != nil {
-                                errorResponse(w, fmt.Sprintf("Something broke during json.Marshal. Err: %s, marshaledGossip: %v", err, string(marshaledGossip)))
-                                return
-                        }
-
-                        ProcessGossip(string(marshaledGossip), *hostIP, *hostIP)
-                } else {
-                        errorResponse(w, "I only accept PUTs for 'seed' or 'service")
-                        return
-                }
-        }
-}
-
-func getGossipArray(name string, requestType string, dataType string) ([]string, []time.Time) {
-        /* dataType in ["data","metadata"] */
-
-        servicePath := SeerDirs[dataType] + "/" + requestType + "/" + name
-        if requestType == "op" {
-                servicePath = SeerDirs["op"]
-        }
-        gossipFiles, _ := ioutil.ReadDir(servicePath)
-        /* read files from servicePath, append to jsonPayload. */
-        gossipArray := make([]string, 0, len(gossipFiles))
-        modTimeArray := make([]time.Time, 0, len(gossipFiles))
-        for _, gossipFile := range gossipFiles {
-                if gossipFile.IsDir() {
-                        continue
-                }
-                gossipData, err := ioutil.ReadFile(servicePath + "/" + gossipFile.Name())
-                if err == nil {
-                        gossipArray = append(gossipArray, string(gossipData))
-                        modTimeArray = append(modTimeArray, gossipFile.ModTime())
-                } else {
-                        err := fmt.Sprintf("[getGossipArray] ERROR: %s\nFILE: %s", err, gossipFile.Name())
-                        fmt.Println(err)
-                }
-        }
-        return gossipArray, modTimeArray
-}
-
-func getServiceData(name string, requestType string, dataType string) string {
-        /* Construct JSON Array.  */
-        data, _ := getGossipArray(name, requestType, dataType)
-        return fmt.Sprintf(`[%s]`, strings.Join(data, ","))
-}
-
-// Once receive UDP notification that seerDestinationAddr needs seed
-// tar gz 'host' and 'service' dirs and PUT to seerDestinationAddr.
-func sendSeed(seerDestinationAddr string, tarredGossipFile string) error {
-        /* Open file */
-        rbody, err := os.Open(tarredGossipFile)
-        if err != nil {
-                return err
-        }
-        defer rbody.Close()
-        /* Put file */
-        request, err := http.NewRequest("PUT", "http://"+seerDestinationAddr+"/seed", rbody)
-        if err != nil {
-                fmt.Printf("[sendSeed] ERROR MAKING REQUEST: %s\n", err)
-                return err
-        }
-        stat, err := rbody.Stat()
-        if err != nil {
-                fmt.Printf("[sendSeed] ERROR WITH STAT(): %s\n", err)
-                return err
-        }
-        request.ContentLength = stat.Size()
-        response, err := http.DefaultClient.Do(request)
-        fmt.Printf("[sendSeed]\nrequest.ContentLength: %v\nRESPONSE: %v\nERR: %v\n", request.ContentLength, response, err)
-        return err
-}
-
-// Zips up seer/<hostname>/gossip/data/ (aka SeerDirs["data"])
-// General usage is targeting 'host' and 'service' subfolders.
-// Removes SeerDirs["data"] root for "easier" untarring into destination.
-// TODO: make less stupid.
-func createTarGz(tarpath string, folders ...string) error {
-        for _, folder := range folders {
-                if !strings.HasPrefix(folder, SeerDirs["data"]) {
-                        return errors.New(fmt.Sprintf("folder: [%s] does not start with: [%s]", folder, SeerDirs["data"]))
-                }
-        }
-        tarfile, err := os.Create(tarpath)
-        if err != nil {
-                return err
-        }
-        defer tarfile.Close()
-        gw, err := gzip.NewWriterLevel(tarfile, gzip.BestCompression)
-        if err != nil {
-                return err
-        }
-        defer gw.Close()
-        tw := tar.NewWriter(gw)
-        defer tw.Close()
-        walkme := ""
-        for _, folder := range folders {
-                /* How deep do we walk? Is this really worth doing just to avoid filepath.Walk()? */
-                levelsdeep := 1
-                dirs := []string{folder}
-                for len(dirs) > 0 {
-                        /* Pop directory to be walked from dirs array. */
-                        walkme, dirs = dirs[len(dirs)-1], dirs[:len(dirs)-1]
-                        fileinfos, err := ioutil.ReadDir(walkme)
-                        if err != nil {
-                                fmt.Printf("[createTarGz] Err: %s\n", err)
-                                return err
-                        }
-                        for _, fileinfo := range fileinfos {
-                                path := walkme + "/" + fileinfo.Name()
-                                if fileinfo.IsDir() {
-                                        if levelsdeep > 0 {
-                                                dirs = append(dirs, path)
-                                        }
-                                        continue
-                                }
-                                header, err := tar.FileInfoHeader(fileinfo, path)
-                                header.Name = path[len(SeerDirs["data"])+1:]
-                                err = tw.WriteHeader(header)
-                                if err != nil {
-                                        fmt.Printf("Failed to write Tar Header. Err: %s\n", err)
-                                        return err
-                                }
-                                /* Add file. */
-                                file, err := os.Open(path)
-                                if err != nil {
-                                        fmt.Printf("Failed to open path: [%s] Err: %s\n", path, err)
-                                        continue
-                                }
-                                _, err = io.Copy(tw, file)
-                                if err != nil {
-                                        fmt.Printf("Failed to copy file into tar: [%s] Err: %s\n", path, err)
-                                        file.Close()
-                                        continue
-                                }
-                                file.Close()
-                        }
-                        levelsdeep -= 1
-                }
-        }
-        return err
-}
-
-func processSeed(targzpath string) {
-        lastSeedTS = time.Now().UnixNano()
-        fmt.Printf("[processSeed] lastSeedTS: %s\n", lastSeedTS)
-        targzfile, err := os.Open(targzpath)
-        if err != nil {
-                lastSeedTS = 0
-                return
-        }
-        defer targzfile.Close()
-        gzr, err := gzip.NewReader(targzfile)
-        if err != nil {
-                lastSeedTS = 0
-                return
-        }
-        defer gzr.Close()
-        tr := tar.NewReader(gzr)
-        for {
-                hdr, err := tr.Next()
-                if err == io.EOF {
-                        break
-                }
-                if err != nil {
-                        fmt.Printf("[processSeed] tr ERR: %s\n", err)
-                        break
-                }
-                buf := bytes.NewBuffer(nil)
-                io.Copy(buf, tr)
-                fullpath := SeerDirs["data"] + "/" + hdr.Name
-                filename, dir := GetFilenameAndDir(fullpath)
-                err = LazyWriteFile(dir, filename, buf.Bytes())
-
-                if err != nil {
-                        fmt.Printf("[processSeed] ERRR: %s", err)
-                }
-        }
-        /* Suppose might want a seedReceived channel. */
-        BoolChannels["seerReady"] <- true
-        return
+func HttpHandler(w http.ResponseWriter, r *http.Request) {
+	// Only allow HTTP on localhost. When wish to allow external GETs, do more work.
+	if !(strings.HasPrefix(r.Host, "127.0.0.1") ||
+		strings.HasPrefix(r.Host, "[::1]")) {
+		return
+	}
+	response := ""
+	splitURL := strings.Split(r.URL.Path, "/")
+	switch r.Method {
+	case "GET":
+		if len(splitURL) == 2 && splitURL[1] == "" {
+			fmt.Fprintf(w, fmt.Sprintf("You should request something..\nHOST: %s, PATH: %s, METHOD: %s\n", r.Host, r.URL.Path, r.Method))
+			return
+		}
+		path := splitURL[1]
+		if len(splitURL) == 3 {
+			// Get single item.
+			key := splitURL[2]
+			response = string(get(path, key))
+		} else {
+			dirlist, _ := os.Open(datadir + "/" + path)
+			keys, _ := dirlist.Readdirnames(-1)
+			items := make([]string, 0, len(keys))
+			for _, key := range keys {
+				item := string(get(path, key))
+				if item != "" {
+					items = append(items, item)
+				}
+			}
+			response = fmt.Sprintf(`[%s]`, strings.Join(items, ","))
+		}
+		fmt.Fprintf(w, response)
+	case "PUT":
+		b := bytes.NewBuffer(nil)
+		_, err := io.Copy(b, r.Body)
+		if err != nil {
+			fmt.Fprintf(w, fmt.Sprintf("ERR: %s\n", err))
+		}
+		mm := metaMessage{}
+		json.Unmarshal(b.Bytes(), &mm.Message)
+		json.Unmarshal([]byte(r.Header.Get("X-IndexedProperties")), &mm.IndexedProperties)
+		if mm.IndexedProperties == nil {
+			fmt.Fprintf(w, "Please pass json encoded list to 'X-IndexedProperties' header!\n")
+			return
+		}
+		for _, prop := range mm.IndexedProperties {
+			if mm.Message[prop] == nil {
+				fmt.Fprintf(w, fmt.Sprintf("There is no property named '%s' for Message: %s\n", prop, string(b.Bytes())))
+				return
+			}
+			if mm.Message[prop] == "" {
+				fmt.Fprintf(w, fmt.Sprintf("Property named '%s' is empty for Message: %s\n", prop, string(b.Bytes())))
+				return
+			}
+		}
+		mm.Timestamp = MS(Now())
+		encodedMessage := encode(mm, udpAddress)
+		// For now, electing to use udp server as main entry point.
+		sendMessage(encodedMessage, udpAddress)
+		fmt.Fprintf(w, fmt.Sprintf("PUT: %s.\n", encodedMessage))
+	}
 }
 
 /*******************************************************************************
-    Background work related stuffs.
+    Utilities
 *******************************************************************************/
 
-func BackgroundLoop(name string, seconds int, fns ...func()) {
-        go func() {
-                for {
-                        time.Sleep(time.Duration(seconds) * time.Second)
-                        fmt.Printf("\n[%s] : LOOPING : %s\n", time.Now(), name)
-                        for _, f := range fns {
-                                f()
-                        }
-                }
-        }()
+func lazyWriteFile(folderName string, fileName string, data []byte) error {
+	err := ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
+	if err != nil {
+		os.MkdirAll(folderName, 0777)
+		err = ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
+	}
+	if err != nil {
+		fmt.Printf("[LazyWriteFile] Could not WriteFile: %s\nErr: %s\n", folderName+"/"+fileName, err)
+	}
+	return err
 }
 
-func AntiEntropy() {
-        // Sexier to just compare seerNearness keys against gossip/data/host info.
-        //   - If see host in seerNearness that is "unknown" ask it for its info.
-        _, seerPeerMap := GetSeerPeers()
-        for seerPeer, _ := range seerNearness {
-                _, peerFound := seerPeerMap[seerPeer]
-                if !peerFound {
-                        // Ask for seed from unknown peer and return.
-                        BootStrap(seerPeer, tcpAddress)
-                        seerNearness[seerPeer] = 0
-                        return
-                }
-        }
+func chooseNFromArrayNonDeterministically(n int, array []string) []string {
+	chosenItems := make([]string, 0, n)
+	tracker := map[string]bool{}
+	counter := 0
+	tries := 0
+	m := len(array)
+	for counter < n {
+		tries++
+		if tries > maxInt(m, 4*n) {
+			/* Do not wish to try forever. */
+			break
+		}
+		item := array[rand.Intn(m)]
+		if tracker[item] {
+			continue
+		}
+		chosenItems = append(chosenItems, item)
+		tracker[item] = true
+		counter++
+	}
+	return chosenItems
 }
 
-func TombstoneReaper() {
-        /*
-           1. Wrapped by background jobs. (Sleep Q seconds then do.)
-           2. Remove anything but most recent doc that is older than P seconds.
-           3. Remove remaining docs if they are Tombstoned and older than certain time.
-        */
-        fmt.Printf("[TombstoneReaper] I remove stuff that has been deleted or older timestamped source docs.\n")
+func maxInt(x int, y int) int {
+	if x > y {
+		return x
+	}
+	return y
 }
 
-/*******************************************************************************
-    Metadata calculation
-*******************************************************************************/
-
-type Metadata struct {
-        TS          []int64
-        TSLag       []int64
-        MessageData map[string]int
-        PeerData    int
-}
-
-type MetadataAggregate struct {
-        HostList    []string
-        PeerCounts  []int
-        MessageData map[string][]int
-
-        TSLag   [][]int64
-        TS      [][]int64
-}
-
-func requestMetadata() {
-        /* For all peers, send {"SeerAddr":udpAddress,"SeerRequest":"Metadata"} */
-        message := fmt.Sprintf(`{"SeerAddr":"%s","SeerRequest":"Metadata"}`, udpAddress)
-        seerPeers, _ := GetSeerPeers(udpAddress)
-        for _, peer := range seerPeers {
-                SendGossip(message, peer)
-        }
-}
-
-func generateMetadata() string {
-        var metadata Metadata
-        metadata.TS = getStats(getSortedTSArray(udpAddress))
-        metadata.TSLag = getStats(getSortedTSLagArray(udpAddress))
-        ops, _ := getGossipArray("", "op", "data")
-        metadata.MessageData = map[string]int{
-                "GossipCount":       gossipCount,
-                "UniqueGossipCount": uniqueGossipCount,
-                "OpCount":           len(ops),
-        }
-        seerPeers, _ := GetSeerPeers(udpAddress)
-        metadata.PeerData = len(seerPeers)
-
-        json, err := json.Marshal(metadata)
-        if err != nil {
-                return ""
-        }
-        return string(json)
-}
-
-func aggregateMetadata() MetadataAggregate {
-        /* Aggregate TS, TSLag, MessageData and PeerData into global view. */
-        aggregate := MetadataAggregate{}
-        aggregate.MessageData = map[string][]int{}
-
-        metadataGossip, _ := getGossipArray("Seer", "service", "metadata")
-        for _, metadatumGossip := range metadataGossip {
-                var g Gossip
-                var metadatum Metadata
-                _ = json.Unmarshal([]byte(metadatumGossip), &g)
-                _ = json.Unmarshal([]byte(g.Metadata), &metadatum)
-
-                aggregate.HostList = append(aggregate.HostList, g.SeerAddr)
-
-                aggregate.PeerCounts = append(aggregate.PeerCounts, metadatum.PeerData)
-                for _, keyName := range []string{"GossipCount", "UniqueGossipCount", "OpCount"} {
-                        aggregate.MessageData[keyName+"s"] = append(aggregate.MessageData[keyName+"s"], metadatum.MessageData[keyName])
-                }
-
-                aggregate.TSLag = appendPercentileData(metadatum.TSLag, aggregate.TSLag)
-                aggregate.TS = appendPercentileData(metadatum.TS, aggregate.TS)
-        }
-        return aggregate
-}
-
-func appendPercentileData(sourceArray []int64, destinationArray [][]int64) [][]int64 {
-        lengthDiff := len(sourceArray) - len(destinationArray)
-        for i := 0; i < lengthDiff; i++ {
-                destinationArray = append(destinationArray, []int64{})
-        }
-        for idx, percentile := range sourceArray {
-                destinationArray[idx] = append(destinationArray[idx], percentile)
-        }
-        return destinationArray
-}
-
-func getStats(int64Array []int64) []int64 {
-        if len(int64Array) == 0 {
-                return []int64{0, 0, 0, 0}
-        }
-        /* Return Percentiles.  Currently: [0th(min), 5th, 50th(med), 95th, 100th(max)] */
-        return []int64{Percentile(int64Array, 0.0), Percentile(int64Array, 0.05), Percentile(int64Array, 0.5), Percentile(int64Array, 0.95), Percentile(int64Array, 1.0)}
-}
-
-func getSortedTSArray(excludeHost string) []int64 {
-        seerPeers, _ := GetSeerPeers(excludeHost)
-        tsArray := make([]int64, 0, len(seerPeers))
-        for _, peer := range seerPeers {
-                gossips, _ := getGossipArray(peer, "host", "data")
-                for _, gossip := range gossips {
-                        TS, err := ExtractTSFromJSON(gossip)
-                        if err != nil {
-                                continue
-                        }
-                        tsArray = append(tsArray, TS)
-                }
-        }
-        sort.Sort(Int64Array(tsArray))
-        return tsArray
-}
-
-func getSortedTSLagArray(excludeHost string) []int64 {
-        seerPeers, _ := GetSeerPeers(excludeHost)
-        lagArray := make([]int64, 0, len(seerPeers))
-        for _, peer := range seerPeers {
-                gossips, modTimes := getGossipArray(peer, "host", "data")
-                for idx, gossip := range gossips {
-                        lag, err := getTSLag(gossip, modTimes[idx])
-                        if err != nil {
-                                continue
-                        }
-                        lagArray = append(lagArray, lag)
-                }
-        }
-        sort.Sort(Int64Array(lagArray))
-        return lagArray
-}
-
-func getTSLag(gossip string, modtime time.Time) (int64, error) {
-        TS, err := ExtractTSFromJSON(gossip)
-        if err != nil {
-                return 0, err
-        }
-        lag := MS(modtime) - TS
-        return lag, nil
-}
-
-/*******************************************************************************
-    Silly helper functions.
-*******************************************************************************/
-
-type Int64Array []int64
-
-func (p Int64Array) Len() int           { return len(p) }
-func (p Int64Array) Less(i, j int) bool { return p[i] < p[j] }
-func (p Int64Array) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
-
-func GetFilenameAndDir(fullpath string) (string, string) {
-        /* Down and dirty, just don't like using 'filepath' package. */
-        splitfullpath := strings.Split(fullpath, "/")
-
-        filename := splitfullpath[len(splitfullpath)-1]
-        dir := fullpath[:len(fullpath)-(len(filename)+1)]
-        return filename, dir
-}
-
-/* Thanks Hugo Steinhaus. */
-func GetCombinations(keys []string) [][]string {
-        combinations := [][]string{}
-        combinations = append(combinations, []string{keys[0]})
-        for i := 1; i < len(keys); i++ {
-                newcombinations := [][]string{}
-                for j := 0; j < len(combinations); j++ {
-                        combinations[j] = append(combinations[j], "")
-                        for k := 0; k < i+1; k++ {
-                                holderarray := make([]string, i+1)
-                                copy(holderarray, combinations[j])
-                                if k != i {
-                                        copy(holderarray[k+1:], holderarray[k:])
-                                }
-                                holderarray[k] = keys[i]
-                                newcombinations = append(newcombinations, holderarray)
-                        }
-                }
-                combinations = newcombinations
-        }
-        return combinations
-}
-
-func Percentile(sortedArray []int64, percentile float64) int64 {
-        maxIdx := len(sortedArray) - 1
-        idx := int(math.Ceil(percentile * float64(maxIdx)))
-        return sortedArray[idx]
-}
-
-func AbsInt(x int) int {
-        if x < 0 {
-                return -1 * x
-        }
-        return x
-}
-
-func MinInt(x int, y int) int {
-        if x < y {
-                return x
-        }
-        return y
-}
-
-func MaxInt(x int, y int) int {
-        if x > y {
-                return x
-        }
-        return y
-}
-
+// MS should be in external package.
 func MS(time time.Time) int64 {
-        return time.UnixNano() / 1000000
+	return time.UnixNano() / 1000000
 }
 
-func MergeDelimitedStrings(current string, new string) string {
-        // Guess can make work for any generic delimiter.
-        // For now, just ","
-        items := strings.Split(new, ",")
-        newitems := []string{}
-        for _, item := range items {
-                if strings.LastIndex(current, item) == -1 {
-                        newitems = append(newitems, item)
-                }
-        }
-        merged := strings.Join(newitems, ",")
-        if current != "" {
-                if merged != "" {
-                        merged = merged + `,` + current
-                } else {
-                        merged = current
-                }
-        }
-        return merged
-}
-
-/* Freaky Voodoo for unittesting. */
-
+// Now() is voodoo to make mocking time easier in tests.
 var Now = func() time.Time { return time.Now() }
