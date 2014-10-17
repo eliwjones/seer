@@ -67,8 +67,24 @@ $ curl -G -s http://127.0.0.1:9998/host | python -m json.tool
     }
 ]
 ```
-Put something in thestore:
+Put something in:
 ```
-$ curl -X PUT -H 'Content-Type: application/json' -H 'X-IndexedProperties: ["ServiceName"]' -d '{"ServiceName":"catpics","ServiceAddr":"127.0.0.1:12345"}' hhttp://127.0.0.1:9998
+$ curl -X PUT -H 'Content-Type: application/json' -H 'X-IndexedProperties: ["ServiceName"]' -d '{"ServiceName":"catpics","ServiceAddr":"127.0.0.1:12345"}' http://127.0.0.1:9998
 PUT: {"Timestamp":1398114761675,"Source":"127.0.0.1:9999","Message":{"ServiceAddr":"127.0.0.1:12345","ServiceName":"catpics"},"MessageKey":"qmYSnSEMRY86evfpGlSJGJN/DTJpr6yd6rCeYuw5Stc=","IndexedProperties":["ServiceName"]}.
+```
+Get something back:
+```
+$ curl -G -s http://127.0.0.1:9998/servicename/catpics | python -m json.tool
+{
+    "IndexedProperties": [
+        "ServiceName"
+    ], 
+    "Message": {
+        "ServiceAddr": "127.0.0.1:12345", 
+        "ServiceName": "catpics"
+    }, 
+    "MessageKey": "G6lCtA8RD4kkcLshG/a59H5A9aE9skvRTUPycTz0JcY=", 
+    "Source": "127.0.0.1:9999", 
+    "Timestamp": 1413566434650
+}
 ```
