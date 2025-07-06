@@ -12,7 +12,7 @@ var (
 
 func getMetaMessage(generatekey bool) metaMessage {
 	mm := metaMessage{}
-	mm.Message = map[string]interface{}{}
+	mm.Message = map[string]any{}
 	mm.Timestamp = 1234567890
 	mm.Source = udpAddress
 	mm.Message["Type"] = "join"

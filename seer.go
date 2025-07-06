@@ -45,10 +45,10 @@ type metaMessage struct {
 	Timestamp         int64
 	Tombstone         bool `json:",omitempty"`
 	Source            string
-	Message           map[string]interface{} `json:",omitempty"`
-	MessageKey        string                 `json:",omitempty"`
-	IndexedProperties []string               /* 'host' ('nodeId'?), 'service' */
-	Control           string                 `json:",omitempty"`
+	Message           map[string]any `json:",omitempty"`
+	MessageKey        string         `json:",omitempty"`
+	IndexedProperties []string       /* 'host' ('nodeId'?), 'service' */
+	Control           string         `json:",omitempty"`
 }
 
 // New version of it.
@@ -231,7 +231,7 @@ func encode(mm metaMessage, source string) []byte {
 
 func joinMessage(source string, ip string, port string) metaMessage {
 	mm := metaMessage{}
-	mm.Message = map[string]interface{}{}
+	mm.Message = map[string]any{}
 	mm.Timestamp = MS(Now())
 	mm.Source = source
 	mm.Message["Name"] = ip
