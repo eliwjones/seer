@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -161,8 +160,6 @@ func init() {
 }
 
 func main() {
-	runtime.GOMAXPROCS(runtime.NumCPU())
-
 	flag.Parse()
 
 	test_gossip := Gossip{Key: "test_key", TS: int64(99)}
