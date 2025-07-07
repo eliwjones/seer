@@ -153,8 +153,8 @@ func init() {
 			gossip.Path = append(gossip.Path, idx)
 			gossipees = append(gossipees, idx)
 		}
-		for _, node_idx := range gossipees {
-			destNodeKey := fmt.Sprintf("node_%d", node_idx)
+		for _, nodeIdx := range gossipees {
+			destNodeKey := fmt.Sprintf("node_%d", nodeIdx)
 			SendGossip(destNodeKey, gossip)
 		}
 	}
@@ -168,7 +168,7 @@ func main() {
 	test_gossip := Gossip{Key: "test_key", TS: int64(99)}
 	channelCount := 10
 
-	for fnName, _ := range GossipFunc {
+	for fnName := range GossipFunc {
 		currentFunc = fnName
 
 		initChannels(channelCount, nodeCount)
@@ -191,8 +191,8 @@ func main() {
 		}
 	calculate:
 		// Want to send "quit" directive to go routines.
-		for _, node_channel := range nodeChannels {
-			node_channel <- ChannelMessage{Destination: "quit"}
+		for _, nodeChannel := range nodeChannels {
+			nodeChannel <- ChannelMessage{Destination: "quit"}
 		}
 
 		counterQuitChannel <- true
@@ -222,29 +222,26 @@ func SendGossip(nodeKey string, gossip Gossip) {
 	if messageLoss > 0 && rand.Intn(100) < messageLoss {
 		return
 	}
-	node_modulus := int(ExtractNodeIDX(nodeKey)) % len(nodeChannels)
-	nodeChannels[node_modulus] <- ChannelMessage{Destination: nodeKey, Message: gossip}
+	nodeModulus := int(ExtractNodeIDX(nodeKey)) % len(nodeChannels)
+	nodeChannels[nodeModulus] <- ChannelMessage{Destination: nodeKey, Message: gossip}
 }
 
-func ReceiveGossip(node_modulus int) {
+func ReceiveGossip(nodeModulus int) {
 	// Gossip comes down channel.  Take it and update nodeMap accordingly.
-	for {
-		select {
-		case channel_message := <-nodeChannels[node_modulus]:
-			if channel_message.Destination == "quit" {
-				shutdownAckChannel <- true
+	for channelMessage := range nodeChannels[nodeModulus] {
+		if channelMessage.Destination == "quit" {
+			shutdownAckChannel <- true
 
-				return
-			}
-			receivedCounterChannel <- 1
-			ProcessGossip(channel_message.Destination, channel_message.Message)
+			return
 		}
+		receivedCounterChannel <- 1
+		ProcessGossip(channelMessage.Destination, channelMessage.Message)
 	}
 }
 
 func ExtractNodeIDX(nodeKey string) int64 {
-	node_parts := strings.Split(nodeKey, "_")
-	idx, _ := strconv.ParseInt(node_parts[1], 10, 64)
+	nodeParts := strings.Split(nodeKey, "_")
+	idx, _ := strconv.ParseInt(nodeParts[1], 10, 64)
 	return idx
 }
 
