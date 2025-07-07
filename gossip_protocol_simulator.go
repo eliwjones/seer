@@ -1,4 +1,4 @@
-// +build gossip_protocol_simulate
+//go:build gossip_protocol_simulate
 
 package main
 
@@ -31,6 +31,7 @@ var (
 	receivedCounterChannel chan int
 	uniqueCounterChannel   chan int
 	counterQuitChannel     chan bool
+	shutdownAckChannel     chan bool
 	gossipSentCount        int
 	gossipReceivedCount    int
 	uniqueGossipCount      int
@@ -168,11 +169,12 @@ func main() {
 	flag.Parse()
 
 	test_gossip := Gossip{Key: "test_key", TS: int64(99)}
+	channelCount := 10
 
 	for fnName, _ := range GossipFunc {
 		current_func = fnName
 
-		initChannels(10, nodeCount)
+		initChannels(channelCount, nodeCount)
 		initNodes(nodeCount)
 		initCounters()
 
@@ -195,7 +197,13 @@ func main() {
 		for _, node_channel := range node_channels {
 			node_channel <- ChannelMessage{Destination: "quit"}
 		}
+
 		counterQuitChannel <- true
+
+		for i := 0; i < channelCount; i++ {
+			<-shutdownAckChannel
+		}
+
 		calculateStats(test_gossip)
 	}
 }
@@ -227,6 +235,8 @@ func ReceiveGossip(node_modulus int) {
 		select {
 		case channel_message := <-node_channels[node_modulus]:
 			if channel_message.Destination == "quit" {
+				shutdownAckChannel <- true
+
 				return
 			}
 			receivedCounterChannel <- 1
@@ -260,12 +270,16 @@ func initChannels(channelCount int, nodeCount int) {
 	for i := 0; i < channelCount; i++ {
 		// Multiplier (message redundancy) is usually under 20 so..
 		node_channels[i] = make(chan ChannelMessage, 20*int(nodeCount/channelCount))
+	}
+	for i := 0; i < channelCount; i++ {
 		go ReceiveGossip(i)
 	}
 	sentCounterChannel = make(chan int, 1000)
 	receivedCounterChannel = make(chan int, 1000)
 	uniqueCounterChannel = make(chan int, 1000)
-	counterQuitChannel = make(chan bool, 10)
+	counterQuitChannel = make(chan bool, channelCount)
+	shutdownAckChannel = make(chan bool)
+
 	go gossipCounter()
 }
 
