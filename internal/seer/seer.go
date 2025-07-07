@@ -6,10 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
@@ -17,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -69,7 +68,7 @@ func New(hostip string, udpport int, tcpport int, s string, seeds []string) *see
 // Run it.
 func (s *seer) Run() {
 	signaler := make(chan os.Signal, 1)
-	signal.Notify(signaler, os.Interrupt, os.Kill)
+	signal.Notify(signaler, os.Interrupt, syscall.SIGTERM)
 
 	createUDPSendSocket()
 
@@ -259,7 +258,7 @@ func gossip(mm metaMessage) {
 }
 
 func get(path string, key string) []byte {
-	value, _ := ioutil.ReadFile(datadir + "/" + path + "/" + key)
+	value, _ := os.ReadFile(datadir + "/" + path + "/" + key)
 	if strings.Contains(string(value), `Tombstone":true`) {
 		return nil
 	}
@@ -274,14 +273,14 @@ var getPeers = func() []string {
 
 func getKeyPaths() []string {
 	keypaths := []string{}
-	indexedProps, _ := ioutil.ReadDir(datadir)
+	indexedProps, _ := os.ReadDir(datadir)
 	for _, indexedProp := range indexedProps {
 		if !indexedProp.IsDir() {
 			// Looking for directories holding indexed items.
 			continue
 		}
 		path := datadir + "/" + indexedProp.Name()
-		keys, _ := ioutil.ReadDir(path)
+		keys, _ := os.ReadDir(path)
 		for _, key := range keys {
 			if key.IsDir() {
 				// Looking for files here.
@@ -296,12 +295,12 @@ func getKeyPaths() []string {
 func extractHostIPandPort(udpaddress string) (string, string, error) {
 	parts := strings.Split(udpaddress, ":")
 	if len(parts) != 2 {
-		return "", "", errors.New(fmt.Sprintf("Address should be of format <hostip>:<port>. Got: %s", udpaddress))
+		return "", "", fmt.Errorf("address should be of format <hostip>:<port>. Got: %s", udpaddress)
 	}
 	hostip := parts[0]
 	port := parts[1]
 	if hostip == "" || port == "" {
-		return hostip, port, errors.New(fmt.Sprintf("Hostip and Port should be non-empty. Hostip: %s, Port: %s", hostip, port))
+		return hostip, port, fmt.Errorf("hostip and port should be non-empty. hostip: %s, port: %s", hostip, port)
 	}
 	return hostip, port, nil
 }
@@ -325,7 +324,7 @@ func BackgroundLoop(name string, seconds int, fns ...func()) {
 func tombstoneReaper() {
 	keypaths := getKeyPaths()
 	for _, keypath := range keypaths {
-		value, err := ioutil.ReadFile(keypath)
+		value, err := os.ReadFile(keypath)
 		if err != nil {
 			fmt.Printf("keypath: %s, err: %s\n", keypath, err)
 			continue
@@ -409,7 +408,7 @@ func HttpHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		if len(splitURL) == 2 && splitURL[1] == "" {
-			fmt.Fprintf(w, fmt.Sprintf("You should request something..\nHOST: %s, PATH: %s, METHOD: %s\n", r.Host, r.URL.Path, r.Method))
+			fmt.Fprintf(w, "You should request something..\nHOST: %s, PATH: %s, METHOD: %s\n", r.Host, r.URL.Path, r.Method)
 			return
 		}
 		path := splitURL[1]
@@ -429,12 +428,12 @@ func HttpHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			response = fmt.Sprintf(`[%s]`, strings.Join(items, ","))
 		}
-		fmt.Fprintf(w, response)
+		fmt.Fprint(w, response)
 	case "PUT":
 		b := bytes.NewBuffer(nil)
 		_, err := io.Copy(b, r.Body)
 		if err != nil {
-			fmt.Fprintf(w, fmt.Sprintf("ERR: %s\n", err))
+			fmt.Fprintf(w, "ERR: %s\n", err)
 		}
 		mm := metaMessage{}
 		json.Unmarshal(b.Bytes(), &mm.Message)
@@ -445,11 +444,11 @@ func HttpHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, prop := range mm.IndexedProperties {
 			if mm.Message[prop] == nil {
-				fmt.Fprintf(w, fmt.Sprintf("There is no property named '%s' for Message: %s\n", prop, string(b.Bytes())))
+				fmt.Fprintf(w, "There is no property named '%s' for Message: %s\n", prop, b.String())
 				return
 			}
 			if mm.Message[prop] == "" {
-				fmt.Fprintf(w, fmt.Sprintf("Property named '%s' is empty for Message: %s\n", prop, string(b.Bytes())))
+				fmt.Fprintf(w, "Property named '%s' is empty for Message: %s\n", prop, b.String())
 				return
 			}
 		}
@@ -457,7 +456,7 @@ func HttpHandler(w http.ResponseWriter, r *http.Request) {
 		encodedMessage := encode(mm, udpAddress)
 		// For now, electing to use udp server as main entry point.
 		sendMessage(encodedMessage, udpAddress)
-		fmt.Fprintf(w, fmt.Sprintf("PUT: %s.\n", encodedMessage))
+		fmt.Fprintf(w, "PUT: %s.\n", encodedMessage)
 	}
 }
 
@@ -466,10 +465,10 @@ func HttpHandler(w http.ResponseWriter, r *http.Request) {
 *******************************************************************************/
 
 func lazyWriteFile(folderName string, fileName string, data []byte) error {
-	err := ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
+	err := os.WriteFile(folderName+"/"+fileName, data, 0777)
 	if err != nil {
 		os.MkdirAll(folderName, 0777)
-		err = ioutil.WriteFile(folderName+"/"+fileName, data, 0777)
+		err = os.WriteFile(folderName+"/"+fileName, data, 0777)
 	}
 	if err != nil {
 		fmt.Printf("[LazyWriteFile] Could not WriteFile: %s\nErr: %s\n", folderName+"/"+fileName, err)
