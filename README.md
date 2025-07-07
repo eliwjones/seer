@@ -1,90 +1,80 @@
-seer
-========
+# seer
 
-Simplified gossip based key-value store.
+A simplified, gossip-based key-value store written in Go.
 
+This project provides a distributed, eventually-consistent key-value store that uses a gossip protocol for node discovery and data propagation.
 
-Quick Start
-===========
+### Project Structure
 
-To Test:
-```
-$ git clone git@github.com:eliwjones/seer.git
-$ cd seer
-$ go test -v
-=== RUN Test_auth
---- PASS: Test_auth (0.00 seconds)
-=== RUN Test_messageKey
---- PASS: Test_messageKey (0.00 seconds)
-=== RUN Test_joinMessage
---- PASS: Test_joinMessage (0.00 seconds)
-=== RUN Test_gossip
---- PASS: Test_gossip (0.00 seconds)
-=== RUN Test_tombstoneReaper
---- PASS: Test_tombstoneReaper (0.00 seconds)
-PASS
-ok  	github.com/eliwjones/seer	0.004s
+This project is organized like so:
+
+*   `cmd/seer/`: The main application binary for the key-value store.
+*   `cmd/gossip-sim/`: An in-memory simulation tool for testing gossip strategies.
+*   `internal/seer/`: The core library logic, private to this project.
+
+## Quick Start
+
+### Running Tests
+
+To run all tests for the project from the root directory:
+
+```bash
+go test ./...
 ```
 
-To Run:
+### Running the Seer KV Store
+
+You can run `seer` nodes directly using `go run` without needing to build the binary first.
+
+**1. Start the first node (a seed node):**
+
+In your first terminal, run:
+```bash
+go run ./cmd/seer/ -ip=127.0.0.1 -udp=9999 -tcp=9998
 ```
-$ go run cmd/sd/sd.go -ip=127.0.0.1 -udp=9999 -tcp=9998 # From top level dir.
+
+**2. In another terminal, start a second node and have it join the first:**
+
+```bash
+go run ./cmd/seer/ -ip=127.0.0.1 -udp=8888 -tcp=8887 -seeds=127.0.0.1:9999
 ```
-Try to join another server:
+The second node will discover the first via the `-seeds` flag and they will begin gossiping.
+
+### Interacting with the API
+
+Once the nodes are running, you can use `curl` to interact with the HTTP interface of any node in the cluster.
+
+**Get all known hosts:**
+
+This will return a list of all nodes currently known to the node you query.
+```bash
+curl -G -s http://127.0.0.1:9998/host | python -m json.tool
 ```
-$ go run cmd/sd/sd.go -ip=127.0.0.1 -udp=8888 -tcp=8887 -seeds=127.0.0.1:9999
+
+**Store a new key-value pair:**
+
+The `X-IndexedProperties` header is crucial. It tells `seer` which fields in the JSON body to create an index for, allowing for fast lookups by that key.
+```bash
+curl -X PUT \
+  -H 'Content-Type: application/json' \
+  -H 'X-IndexedProperties: ["ServiceName"]' \
+  -d '{"ServiceName":"catpics","ServiceAddr":"127.0.0.1:12345"}' \
+  http://127.0.0.1:9998
 ```
-Curl the httpserver for hosts:
+
+**Retrieve a value by its index:**
+
+Because we indexed by `ServiceName` in the previous step, we can now look up the data using the path `/servicename/catpics`.
+```bash
+curl -G -s http://127.0.0.1:9998/servicename/catpics | python -m json.tool
 ```
-$ curl -G -s http://127.0.0.1:9998/host | python -m json.tool
-[
-    {
-        "IndexedProperties": [
-            "Host"
-        ],
-        "Message": {
-            "Host": "127.0.0.1:8888",
-            "Name": "127.0.0.1",
-            "Port": "8888"
-        },
-        "MessageKey": "O+5KTQ3rv0sJpeY7RXXwA72wE0AaIqJdlfVdGRN4TvQ=",
-        "Source": "127.0.0.1:8888",
-        "Timestamp": 1397177531391
-    },
-    {
-        "Control": "seed",
-        "IndexedProperties": [
-            "Host"
-        ],
-        "Message": {
-            "Host": "127.0.0.1:9999",
-            "Name": "127.0.0.1",
-            "Port": "9999"
-        },
-        "MessageKey": "dIyUbdx3A42XWVxMqn98JWkYATPLEjz2YRC/qkz2pzM=",
-        "Source": "127.0.0.1:8888",
-        "Timestamp": 1397177531545
-    }
-]
+
+### Running the Gossip Simulator
+
+The project includes an in-memory simulator to test the effectiveness of different gossip propagation strategies. This is useful for tuning parameters and observing how data flows through a hypothetical system without running actual network services.
+
+To run the simulator:
+```bash
+go run ./cmd/gossip-sim/
 ```
-Put something in:
-```
-$ curl -X PUT -H 'Content-Type: application/json' -H 'X-IndexedProperties: ["ServiceName"]' -d '{"ServiceName":"catpics","ServiceAddr":"127.0.0.1:12345"}' http://127.0.0.1:9998
-PUT: {"Timestamp":1398114761675,"Source":"127.0.0.1:9999","Message":{"ServiceAddr":"127.0.0.1:12345","ServiceName":"catpics"},"MessageKey":"qmYSnSEMRY86evfpGlSJGJN/DTJpr6yd6rCeYuw5Stc=","IndexedProperties":["ServiceName"]}.
-```
-Get something back:
-```
-$ curl -G -s http://127.0.0.1:9998/servicename/catpics | python -m json.tool
-{
-    "IndexedProperties": [
-        "ServiceName"
-    ], 
-    "Message": {
-        "ServiceAddr": "127.0.0.1:12345", 
-        "ServiceName": "catpics"
-    }, 
-    "MessageKey": "G6lCtA8RD4kkcLshG/a59H5A9aE9skvRTUPycTz0JcY=", 
-    "Source": "127.0.0.1:9999", 
-    "Timestamp": 1413566434650
-}
-```
+This will output statistics on message delivery, path length, and more for various gossip algorithms.

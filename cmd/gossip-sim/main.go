@@ -1,5 +1,3 @@
-//go:build gossip_protocol_simulate
-
 package main
 
 import (
