@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,7 +30,6 @@ var (
 	receivedCounterChannel chan int
 	uniqueCounterChannel   chan int
 	counterQuitChannel     chan bool
-	shutdownAckChannel     chan bool
 	gossipSentCount        int
 	gossipReceivedCount    int
 	uniqueGossipCount      int
@@ -171,7 +171,8 @@ func main() {
 	for fnName := range GossipFunc {
 		currentFunc = fnName
 
-		initChannels(channelCount, nodeCount)
+		var wg sync.WaitGroup
+		initChannels(channelCount, nodeCount, &wg)
 		initNodes(nodeCount)
 		initCounters()
 
@@ -190,16 +191,14 @@ func main() {
 			}
 		}
 	calculate:
-		// Want to send "quit" directive to go routines.
+		// Close our channels so our goroutines shutdown.
 		for _, nodeChannel := range nodeChannels {
-			nodeChannel <- ChannelMessage{Destination: "quit"}
+			close(nodeChannel)
 		}
 
 		counterQuitChannel <- true
 
-		for i := 0; i < channelCount; i++ {
-			<-shutdownAckChannel
-		}
+		wg.Wait()
 
 		calculateStats(test_gossip)
 	}
@@ -226,14 +225,11 @@ func SendGossip(nodeKey string, gossip Gossip) {
 	nodeChannels[nodeModulus] <- ChannelMessage{Destination: nodeKey, Message: gossip}
 }
 
-func ReceiveGossip(nodeModulus int) {
+func ReceiveGossip(nodeModulus int, wg *sync.WaitGroup) {
+	defer wg.Done()
+
 	// Gossip comes down channel.  Take it and update nodeMap accordingly.
 	for channelMessage := range nodeChannels[nodeModulus] {
-		if channelMessage.Destination == "quit" {
-			shutdownAckChannel <- true
-
-			return
-		}
 		receivedCounterChannel <- 1
 		ProcessGossip(channelMessage.Destination, channelMessage.Message)
 	}
@@ -259,20 +255,20 @@ func initCounters() {
 	uniqueGossipCount = 0
 }
 
-func initChannels(channelCount int, nodeCount int) {
+func initChannels(channelCount int, nodeCount int, wg *sync.WaitGroup) {
 	nodeChannels = map[int]chan ChannelMessage{}
 	for i := 0; i < channelCount; i++ {
 		// Multiplier (message redundancy) is usually under 20 so..
 		nodeChannels[i] = make(chan ChannelMessage, 20*int(nodeCount/channelCount))
 	}
 	for i := 0; i < channelCount; i++ {
-		go ReceiveGossip(i)
+		wg.Add(1)
+		go ReceiveGossip(i, wg)
 	}
 	sentCounterChannel = make(chan int, 1000)
 	receivedCounterChannel = make(chan int, 1000)
 	uniqueCounterChannel = make(chan int, 1000)
 	counterQuitChannel = make(chan bool, channelCount)
-	shutdownAckChannel = make(chan bool)
 
 	go gossipCounter()
 }
