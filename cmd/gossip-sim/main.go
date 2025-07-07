@@ -159,45 +159,46 @@ func init() {
 	}
 }
 
+func runSimulation(fnName string, test Gossip, channelCount int) {
+	var wg sync.WaitGroup
+
+	initChannels(channelCount, nodeCount, &wg)
+	initNodes(nodeCount)
+	initCounters()
+
+	defer func() {
+		for _, ch := range nodeChannels {
+			close(ch)
+		}
+		counterQuitChannel <- true
+		wg.Wait()
+	}()
+
+	currentFunc = fnName
+	GossipFunc[fnName]("node_0", test)
+
+	for loops := 0; ; loops++ {
+		select {
+		case <-doneChannel:
+			return
+		case <-time.After(time.Second):
+			ready := uniqueGossipCount > int(0.97*float64(nodeCount)) || loops > 3
+			if ready {
+				return
+			}
+		}
+	}
+}
+
 func main() {
 	flag.Parse()
 
-	test_gossip := Gossip{Key: "test_key", TS: int64(99)}
+	test := Gossip{Key: "test_key", TS: 99}
 	channelCount := 10
 
 	for fnName := range GossipFunc {
-		currentFunc = fnName
-
-		var wg sync.WaitGroup
-		initChannels(channelCount, nodeCount, &wg)
-		initNodes(nodeCount)
-		initCounters()
-
-		// Percolate update gossip.
-		GossipFunc[currentFunc]("node_0", test_gossip)
-		loops := 0
-		for {
-			select {
-			case <-doneChannel:
-				goto calculate
-			case <-time.After(time.Duration(1) * time.Second):
-				if uniqueGossipCount > int(0.97*float64(nodeCount)) || loops > 3 {
-					goto calculate
-				}
-				loops += 1
-			}
-		}
-	calculate:
-		// Close our channels so our goroutines shutdown.
-		for _, nodeChannel := range nodeChannels {
-			close(nodeChannel)
-		}
-
-		counterQuitChannel <- true
-
-		wg.Wait()
-
-		calculateStats(test_gossip)
+		runSimulation(fnName, test, channelCount)
+		calculateStats(test)
 	}
 }
 
