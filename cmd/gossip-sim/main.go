@@ -182,7 +182,7 @@ func runSimulation(fnName string, test Gossip, channelCount int) {
 		case <-doneChannel:
 			return
 		case <-time.After(time.Second):
-			ready := uniqueGossipCount > int(0.97*float64(nodeCount)) || loops > 3
+			ready := uniqueGossipCount == nodeCount || loops > 3
 			if ready {
 				return
 			}
@@ -257,7 +257,7 @@ func initChannels(channelCount int, nodeCount int, wg *sync.WaitGroup) {
 	nodeChannels = map[int]chan ChannelMessage{}
 	for i := 0; i < channelCount; i++ {
 		// Multiplier (message redundancy) is usually under 20 so..
-		nodeChannels[i] = make(chan ChannelMessage, 20*int(nodeCount/channelCount))
+		nodeChannels[i] = make(chan ChannelMessage, 1000*nodeCount)
 	}
 	for i := 0; i < channelCount; i++ {
 		wg.Add(1)
