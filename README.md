@@ -21,7 +21,6 @@ To run all tests for the project from the root directory:
 ```bash
 go test ./...
 ```
-The `./...` wildcard tells the Go toolchain to find and run tests in all packages within the current module.
 
 ### Running the Seer KV Store
 
