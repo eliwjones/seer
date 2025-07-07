@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/eliwjones/seer"
+	"github.com/eliwjones/seer/internal/seer"
 
 	"flag"
 	"fmt"
