@@ -1,5 +1,3 @@
-// +build seer_simulate
-
 package main
 
 import (
@@ -16,15 +14,12 @@ func main() {
 		tcpport := fmt.Sprintf(`%d`, 10000+i)
 		ipaddress := `127.0.0.1`
 		argarray := []string{
-			`--ip=` + ipaddress,
-			`--tcp=` + tcpport,
-			`--udp=` + updport,
-			`--listenbroadcast=false`,
-			`--logcounts=true`}
+			`-ip=` + ipaddress,
+			`-tcp=` + tcpport,
+			`-udp=` + updport}
 
-		// Also want --messageloss and --messagedelay
 		if i > 0 {
-			argarray = append(argarray, `--bootstrap=127.0.0.1:9000`)
+			argarray = append(argarray, `-seeds=127.0.0.1:9000`)
 		}
 		args = append(args, argarray)
 	}
@@ -34,7 +29,7 @@ func main() {
 		if idx == 0 {
 			continue
 		}
-		fmt.Printf("idx:      %s\nargs: %v\n", idx, arg)
+		fmt.Printf("idx:      %d\nargs: %v\n", idx, arg)
 		_, err := runInBackground(`seer`, arg, false)
 		if err != nil {
 			fmt.Println("Err: " + err.Error())
@@ -43,10 +38,9 @@ func main() {
 }
 
 func runInBackground(cmdname string, cmdargs []string, redirectoutput bool) (*exec.Cmd, error) {
-	name, _ := exec.LookPath(cmdname)
 	cmdargs = append([]string{cmdname}, cmdargs...)
 	cmd := &exec.Cmd{
-		Path: name,
+		Path: cmdname,
 		Args: cmdargs,
 	}
 	if redirectoutput {
