@@ -33,12 +33,12 @@ var (
 	gossipSentCount        int
 	gossipReceivedCount    int
 	uniqueGossipCount      int
-	current_func           string
+	currentFunc            string
 
-	doneChannel   = make(chan bool, 10)
-	node_map      = map[string]map[string]Gossip{}
-	node_channels = map[int]chan ChannelMessage{}
-	GossipFunc    = map[string]func(string, Gossip){}
+	doneChannel  = make(chan bool, 10)
+	nodeMap      = map[string]map[string]Gossip{}
+	nodeChannels = map[int]chan ChannelMessage{}
+	GossipFunc   = map[string]func(string, Gossip){}
 
 	// Flag Vars
 	nodeCount     int
@@ -57,22 +57,22 @@ func init() {
 	flag.IntVar(&messageLoss, "messageloss", 0, "How many messages out of 100 will be lost?")
 
 	// Init mapped GossipGossip funcs here since there does not appear to be a sexy way.
-	GossipFunc["GossipGossip0"] = func(node_key string, gossip Gossip) {
-		gossip.Path = append(gossip.Path, ExtractNodeIDX(node_key))
+	GossipFunc["GossipGossip0"] = func(nodeKey string, gossip Gossip) {
+		gossip.Path = append(gossip.Path, ExtractNodeIDX(nodeKey))
 		if gossip.Bounce > bounceLimit {
 			return
 		}
 		// Choose random hosts to gossip to.
 		for i := 0; i < gossipeeCount; i++ {
 			//Choose idx.  SendGossip.
-			idx := int64(rand.Intn(len(node_map)))
-			dest_node_key := fmt.Sprintf("node_%d", idx)
-			SendGossip(dest_node_key, gossip)
+			idx := int64(rand.Intn(len(nodeMap)))
+			destNodeKey := fmt.Sprintf("node_%d", idx)
+			SendGossip(destNodeKey, gossip)
 		}
 	}
 
-	GossipFunc["GossipGossip1"] = func(node_key string, gossip Gossip) {
-		gossip.Path = append(gossip.Path, ExtractNodeIDX(node_key))
+	GossipFunc["GossipGossip1"] = func(nodeKey string, gossip Gossip) {
+		gossip.Path = append(gossip.Path, ExtractNodeIDX(nodeKey))
 		if gossip.Bounce > bounceLimit {
 			return
 		}
@@ -87,20 +87,20 @@ func init() {
 			idx := int64(0)
 			for !ready {
 				ready = true
-				idx = int64(rand.Intn(len(node_map)))
+				idx = int64(rand.Intn(len(nodeMap)))
 				for _, val := range gossip.Path {
 					if idx == val {
 						ready = false
 					}
 				}
 			}
-			dest_node_key := fmt.Sprintf("node_%d", idx)
-			SendGossip(dest_node_key, gossip)
+			destNodeKey := fmt.Sprintf("node_%d", idx)
+			SendGossip(destNodeKey, gossip)
 		}
 	}
 
-	GossipFunc["GossipGossip2"] = func(node_key string, gossip Gossip) {
-		gossip.Path = append(gossip.Path, ExtractNodeIDX(node_key))
+	GossipFunc["GossipGossip2"] = func(nodeKey string, gossip Gossip) {
+		gossip.Path = append(gossip.Path, ExtractNodeIDX(nodeKey))
 		if gossip.Bounce > bounceLimit {
 			return
 		}
@@ -117,16 +117,16 @@ func init() {
 			if seen_map[int64(i)] {
 				continue
 			}
-			dest_node_key := fmt.Sprintf("node_%d", i)
+			destNodeKey := fmt.Sprintf("node_%d", i)
 			// draw rand to see if should send.
 			rand := rand.Intn(nodeCount)
 			if rand <= gossipeeCount {
-				SendGossip(dest_node_key, gossip)
+				SendGossip(destNodeKey, gossip)
 			}
 		}
 	}
 
-	GossipFunc["GossipGossip3"] = func(node_key string, gossip Gossip) {
+	GossipFunc["GossipGossip3"] = func(nodeKey string, gossip Gossip) {
 		if gossip.Bounce > bounceLimit {
 			return
 		}
@@ -143,7 +143,7 @@ func init() {
 			idx := int64(0)
 			for !ready {
 				ready = true
-				idx = int64(rand.Intn(len(node_map)))
+				idx = int64(rand.Intn(len(nodeMap)))
 				for _, val := range gossip.Path {
 					if idx == val {
 						ready = false
@@ -154,14 +154,13 @@ func init() {
 			gossipees = append(gossipees, idx)
 		}
 		for _, node_idx := range gossipees {
-			destination_node_key := fmt.Sprintf("node_%d", node_idx)
-			SendGossip(destination_node_key, gossip)
+			destNodeKey := fmt.Sprintf("node_%d", node_idx)
+			SendGossip(destNodeKey, gossip)
 		}
 	}
 }
 
 func main() {
-	rand.Seed(time.Now().UTC().UnixNano())
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	flag.Parse()
@@ -170,14 +169,14 @@ func main() {
 	channelCount := 10
 
 	for fnName, _ := range GossipFunc {
-		current_func = fnName
+		currentFunc = fnName
 
 		initChannels(channelCount, nodeCount)
 		initNodes(nodeCount)
 		initCounters()
 
 		// Percolate update gossip.
-		GossipFunc[current_func]("node_0", test_gossip)
+		GossipFunc[currentFunc]("node_0", test_gossip)
 		loops := 0
 		for {
 			select {
@@ -192,7 +191,7 @@ func main() {
 		}
 	calculate:
 		// Want to send "quit" directive to go routines.
-		for _, node_channel := range node_channels {
+		for _, node_channel := range nodeChannels {
 			node_channel <- ChannelMessage{Destination: "quit"}
 		}
 
@@ -206,32 +205,32 @@ func main() {
 	}
 }
 
-func ProcessGossip(node_key string, gossip Gossip) {
-	if node_map[node_key][gossip.Key].TS < gossip.TS {
-		node_map[node_key][gossip.Key] = gossip
+func ProcessGossip(nodeKey string, gossip Gossip) {
+	if nodeMap[nodeKey][gossip.Key].TS < gossip.TS {
+		nodeMap[nodeKey][gossip.Key] = gossip
 		uniqueCounterChannel <- 1
 	} else {
 		gossip.Bounce += 1
 	}
-	GossipFunc[current_func](node_key, gossip)
+	GossipFunc[currentFunc](nodeKey, gossip)
 }
 
-func SendGossip(node_key string, gossip Gossip) {
-	// send Gossip down node_channels[node_key]
+func SendGossip(nodeKey string, gossip Gossip) {
+	// send Gossip down nodeChannels[nodeKey]
 	sentCounterChannel <- 1
 	// Simulate messageloss if set.
 	if messageLoss > 0 && rand.Intn(100) < messageLoss {
 		return
 	}
-	node_modulus := int(ExtractNodeIDX(node_key)) % len(node_channels)
-	node_channels[node_modulus] <- ChannelMessage{Destination: node_key, Message: gossip}
+	node_modulus := int(ExtractNodeIDX(nodeKey)) % len(nodeChannels)
+	nodeChannels[node_modulus] <- ChannelMessage{Destination: nodeKey, Message: gossip}
 }
 
 func ReceiveGossip(node_modulus int) {
-	// Gossip comes down channel.  Take it and update node_map accordingly.
+	// Gossip comes down channel.  Take it and update nodeMap accordingly.
 	for {
 		select {
-		case channel_message := <-node_channels[node_modulus]:
+		case channel_message := <-nodeChannels[node_modulus]:
 			if channel_message.Destination == "quit" {
 				shutdownAckChannel <- true
 
@@ -243,17 +242,17 @@ func ReceiveGossip(node_modulus int) {
 	}
 }
 
-func ExtractNodeIDX(node_key string) int64 {
-	node_parts := strings.Split(node_key, "_")
+func ExtractNodeIDX(nodeKey string) int64 {
+	node_parts := strings.Split(nodeKey, "_")
 	idx, _ := strconv.ParseInt(node_parts[1], 10, 64)
 	return idx
 }
 
 func initNodes(nodeCount int) {
-	node_map = map[string]map[string]Gossip{}
+	nodeMap = map[string]map[string]Gossip{}
 	for i := 0; i < nodeCount; i++ {
-		node_key := fmt.Sprintf("node_%d", i)
-		node_map[node_key] = map[string]Gossip{}
+		nodeKey := fmt.Sprintf("node_%d", i)
+		nodeMap[nodeKey] = map[string]Gossip{}
 	}
 }
 
@@ -264,10 +263,10 @@ func initCounters() {
 }
 
 func initChannels(channelCount int, nodeCount int) {
-	node_channels = map[int]chan ChannelMessage{}
+	nodeChannels = map[int]chan ChannelMessage{}
 	for i := 0; i < channelCount; i++ {
 		// Multiplier (message redundancy) is usually under 20 so..
-		node_channels[i] = make(chan ChannelMessage, 20*int(nodeCount/channelCount))
+		nodeChannels[i] = make(chan ChannelMessage, 20*int(nodeCount/channelCount))
 	}
 	for i := 0; i < channelCount; i++ {
 		go ReceiveGossip(i)
@@ -300,12 +299,12 @@ func gossipCounter() {
 }
 
 func calculateStats(test_gossip Gossip) {
-	fmt.Printf("******** [%s] ********\n", current_func)
+	fmt.Printf("******** [%s] ********\n", currentFunc)
 	fmt.Printf("Node Count: %d\nGossipee Count: %d\nBounce Limit: %d\nPath Limit: %d\n", nodeCount, gossipeeCount, bounceLimit, pathLimit)
 	missing_updates := 0
 	path_lens := []int{}
 	max_path_len := 0
-	for _, val := range node_map {
+	for _, val := range nodeMap {
 		if val["test_key"].TS != test_gossip.TS {
 			missing_updates += 1
 		}
