@@ -1,6 +1,8 @@
 # seer
 
-A simplified, gossip-based key-value store written in Go.
+A simplified, gossip-based key-value store written in Go.  
+  
+  (For context, read the original paper: [Epidemic Algorithms for Replicated Database Maintenance](https://github.com/eliwjones/seer/blob/master/epidemic-algorithms-for-replicated-database-maintenance.pdf))
 
 This project provides a distributed, eventually-consistent key-value store that uses a gossip protocol for node discovery and data propagation.
 
