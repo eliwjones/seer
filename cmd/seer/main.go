@@ -5,11 +5,9 @@ import (
 
 	"flag"
 	"fmt"
-	"math/rand"
 	"os"
 	"runtime"
 	"strings"
-	"time"
 )
 
 var (
@@ -22,7 +20,6 @@ var (
 )
 
 func init() {
-	rand.Seed(time.Now().UTC().UnixNano())
 	runtime.GOMAXPROCS(int(runtime.NumCPU() / 2))
 	flag.Parse()
 
