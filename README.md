@@ -6,7 +6,7 @@ This project provides a distributed, eventually-consistent key-value store that 
 
 ### Project Structure
 
-This project is organized according to modern Go standards:
+This project is organized like so:
 
 *   `cmd/seer/`: The main application binary for the key-value store.
 *   `cmd/gossip-sim/`: An in-memory simulation tool for testing gossip strategies.
